@@ -21,6 +21,8 @@ public sealed class SqlServerStatement : AdbcStatement
     private BulkIngestMode _ingestMode = BulkIngestMode.Create;
     private bool _tableLock;
     private IArrowArrayStream? _boundStream;
+    private string? _partitionColumn;
+    private int _partitionCount = 1;
 
     internal SqlServerStatement(SqlServerConnection connection)
     {
@@ -48,6 +50,15 @@ public sealed class SqlServerStatement : AdbcStatement
                 break;
             case SqlServerParameters.IngestTableLock:
                 _tableLock = ParseBool(key, value);
+                break;
+            case SqlServerParameters.PartitionColumn:
+                _partitionColumn = value;
+                break;
+            case SqlServerParameters.PartitionCount:
+                if (!int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _partitionCount) || _partitionCount < 1)
+                {
+                    throw new AdbcException($"Invalid value '{value}' for option '{key}'", AdbcStatusCode.InvalidArgument);
+                }
                 break;
             default:
                 throw AdbcException.NotImplemented($"Unknown statement option '{key}'");
@@ -85,27 +96,13 @@ public sealed class SqlServerStatement : AdbcStatement
     public override QueryResult ExecuteQuery()
     {
         string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
-        TdsSession session = _connection.Session;
-        session.SendSqlBatch(sql);
-        session.Reader.BeginMessage();
+        return new QueryResult(-1, _connection.ExecuteQueryStream(sql));
+    }
 
-        TdsColumn[]? columns = session.ReadUntilResultSet();
-        if (columns == null)
-        {
-            return new QueryResult(-1, SqlServerQueryStream.Empty());
-        }
-
-        try
-        {
-            return new QueryResult(-1, new SqlServerQueryStream(session, columns));
-        }
-        catch
-        {
-            // Unsupported column type: leave the session usable.
-            session.ActiveStream = null;
-            session.DrainResponse(columns);
-            throw;
-        }
+    public override PartitionedResult ExecutePartitioned()
+    {
+        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        return SqlServerPartitions.Execute(_connection.Session, sql, _partitionColumn, _partitionCount);
     }
 
     public override UpdateResult ExecuteUpdate()

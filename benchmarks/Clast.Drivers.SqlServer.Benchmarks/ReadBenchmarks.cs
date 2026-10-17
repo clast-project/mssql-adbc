@@ -29,6 +29,10 @@ public class ReadBenchmarks
     [ParamsSource(nameof(Drivers))]
     public string Driver { get; set; } = "";
 
+    /// <summary>"full" (whole-session TLS, the default) or "login" (login-only TLS).</summary>
+    [Params("full", "login")]
+    public string Encryption { get; set; } = "";
+
     public static IEnumerable<string> Drivers()
     {
         yield return "SqlClient";
@@ -51,17 +55,17 @@ public class ReadBenchmarks
         switch (Driver)
         {
             case "SqlClient":
-                _sqlConnection = new SqlConnection(BenchmarkSettings.SqlClientConnectionString);
+                _sqlConnection = new SqlConnection(BenchmarkSettings.SqlClientConnectionStringFor(Encryption));
                 _sqlConnection.Open();
                 break;
             case "Go":
                 _adbcDriver = CAdbcDriverImporter.Load(BenchmarkSettings.GoDriverPath!);
-                _adbcDatabase = _adbcDriver.Open(new Dictionary<string, string> { ["uri"] = BenchmarkSettings.GoDriverUri });
+                _adbcDatabase = _adbcDriver.Open(new Dictionary<string, string> { ["uri"] = BenchmarkSettings.GoDriverUriFor(Encryption) });
                 _adbcConnection = _adbcDatabase.Connect(null);
                 break;
             case "Clast":
                 _adbcDriver = new SqlServerDriver();
-                _adbcDatabase = _adbcDriver.Open(BenchmarkSettings.ClastOptions);
+                _adbcDatabase = _adbcDriver.Open(BenchmarkSettings.ClastOptionsFor(Encryption));
                 _adbcConnection = _adbcDatabase.Connect(null);
                 break;
         }

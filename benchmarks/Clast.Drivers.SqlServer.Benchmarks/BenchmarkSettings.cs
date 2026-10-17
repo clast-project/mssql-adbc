@@ -14,6 +14,22 @@ internal static class BenchmarkSettings
         Environment.GetEnvironmentVariable("MSSQL_BENCH_CONNECTION")
         ?? "Server=tcp:localhost;Database=tempdb;Integrated Security=true;TrustServerCertificate=true";
 
+    /// <summary>
+    /// Benchmark encryption settings: "full" encrypts the whole session (the
+    /// default for this driver and SqlClient); "login" encrypts only the login.
+    /// </summary>
+    public static string SqlClientConnectionStringFor(string encryption) =>
+        SqlClientConnectionString + (encryption == "login" ? ";Encrypt=false" : ";Encrypt=true");
+
+    public static string GoDriverUriFor(string encryption) =>
+        GoDriverUri + (encryption == "login" ? "&encrypt=false" : "&encrypt=true");
+
+    public static IReadOnlyDictionary<string, string> ClastOptionsFor(string encryption) =>
+        new Dictionary<string, string>(ClastOptions)
+        {
+            [SqlServerParameters.Encrypt] = encryption == "login" ? "optional" : "mandatory",
+        };
+
     /// <summary>Path to the Go MSSQL ADBC driver shared library; the Go case is skipped when unset.</summary>
     public static string? GoDriverPath =>
         Environment.GetEnvironmentVariable("MSSQL_BENCH_GO_DRIVER") is { Length: > 0 } path && File.Exists(path) ? path : null;

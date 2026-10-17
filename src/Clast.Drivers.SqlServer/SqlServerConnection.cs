@@ -39,6 +39,36 @@ public sealed class SqlServerConnection : AdbcConnection
         return statement;
     }
 
+    public override IArrowArrayStream ReadPartition(PartitionDescriptor partition)
+    {
+        return ExecuteQueryStream(SqlServerPartitions.Decode(partition));
+    }
+
+    /// <summary>Sends a batch and returns a stream over its first result set.</summary>
+    internal IArrowArrayStream ExecuteQueryStream(string sql)
+    {
+        _session.SendSqlBatch(sql);
+        _session.Reader.BeginMessage();
+
+        TdsColumn[]? columns = _session.ReadUntilResultSet();
+        if (columns == null)
+        {
+            return SqlServerQueryStream.Empty();
+        }
+
+        try
+        {
+            return new SqlServerQueryStream(_session, columns);
+        }
+        catch
+        {
+            // Unsupported column type: leave the session usable.
+            _session.ActiveStream = null;
+            _session.DrainResponse(columns);
+            throw;
+        }
+    }
+
     public override IArrowArrayStream GetObjects(
         GetObjectsDepth depth,
         string? catalogPattern,

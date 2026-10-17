@@ -91,6 +91,15 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
   read allocates ~4 MB of managed memory and causes no GCs.
 - Ingest with TABLOCK is ~1.4× faster than SqlBulkCopy and ~2.9× faster than
   the Go driver; without TABLOCK the gap is smaller and server-dominated.
-- Next levers: partitioned parallel reads (ADBC `ExecutePartitions` over
-  several sessions) to use more server cores, and read-ahead to overlap
-  TLS decryption with decoding when decoding cost becomes visible.
+- Partitioned reads (`adbc.mssql.partition.column` / `.count`, integer
+  ranges, one descriptor per range, read on separate connections) scale from
+  ~780 ms (1 partition) to ~165 ms (16 partitions) on a clustered-index
+  table. NULL keys go in a separate UNION ALL arm of the first partition so
+  every range stays seekable.
+- Encryption, measured separately (1M rows, full / login-only): this driver
+  ~870 / ~530 ms, SqlClient ~720 / ~730 ms, Go ~1730 / ~1680 ms. With full
+  TLS this driver and SqlClient are within run-to-run noise, which varies by
+  connection (std. dev. up to ~190 ms); login-only lets this driver use
+  32767-byte packets. Full encryption stays the default.
+- Next lever: read-ahead to overlap TLS decryption with decoding when
+  decoding cost becomes visible.

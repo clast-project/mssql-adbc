@@ -67,7 +67,9 @@ internal static class BenchmarkData
                     CASE WHEN i % 10 = 5 THEN NULL ELSE TODATETIMEOFFSET(DATEADD(second, CAST(i % 1000000000 AS int), CAST('2000-01-01' AS datetime2(7))), CAST(i % 1500 AS int) - 720) END,
                     CASE WHEN i % 10 = 6 THEN NULL ELSE NEWID() END
                 FROM n;
-            END
+            END;
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('{table}') AND index_id = 1)
+                CREATE CLUSTERED INDEX cx_id ON {table} (id);
             """;
 
         using var connection = new SqlConnection(BenchmarkSettings.SqlClientConnectionString);

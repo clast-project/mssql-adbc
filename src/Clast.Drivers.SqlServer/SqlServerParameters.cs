@@ -41,6 +41,12 @@ public static class SqlServerParameters
     /// <summary><c>true</c> to take a table lock during bulk ingestion (<c>INSERT BULK ... WITH (TABLOCK)</c>).</summary>
     public const string IngestTableLock = "adbc.mssql.ingest.table_lock";
 
+    /// <summary>Statement option: integer result column whose range is split for <c>ExecutePartitioned</c>.</summary>
+    public const string PartitionColumn = "adbc.mssql.partition.column";
+
+    /// <summary>Statement option: number of partitions <c>ExecutePartitioned</c> produces (default 1).</summary>
+    public const string PartitionCount = "adbc.mssql.partition.count";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 }
