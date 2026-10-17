@@ -116,6 +116,8 @@ internal static class ResultArrays
             Int64Array a => a.GetValue(index),
             UInt8Array a => a.GetValue(index),
             BooleanArray a => a.GetValue(index),
+            DoubleArray a => a.GetValue(index),
+            FloatArray a => a.GetValue(index),
             _ => throw new NotSupportedException($"Unexpected metadata column type {array.Data.DataType}"),
         };
     }

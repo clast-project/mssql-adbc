@@ -359,7 +359,7 @@ internal static class SqlServerMetadata
     /// patterns use <c>%</c> and <c>_</c> as LIKE does; T-SQL also gives
     /// <c>[</c> a meaning, so it is escaped.
     /// </summary>
-    private static string Like(string column, string? pattern) =>
+    internal static string Like(string column, string? pattern) =>
         pattern == null ? "" : $" AND {column} LIKE {Literal(pattern.Replace("[", "[[]"))}";
 
     internal static string Literal(string value) => "N'" + value.Replace("'", "''") + "'";
@@ -369,6 +369,30 @@ internal static class SqlServerMetadata
     {
         var results = new List<List<object?[]>>();
         session.SendSqlBatch(sql);
+        try
+        {
+            ReadResults(session, results);
+        }
+        catch
+        {
+            // Between result sets nothing else reads the rest of the response; leave the session usable.
+            if (!session.Reader.IsMessageComplete && !session.IsBroken)
+            {
+                try
+                {
+                    session.DrainResponse();
+                }
+                catch (AdbcException)
+                {
+                }
+            }
+            throw;
+        }
+        return results;
+    }
+
+    private static void ReadResults(TdsSession session, List<List<object?[]>> results)
+    {
         while (session.ReadUntilResultSet() is TdsColumn[] columns)
         {
             var rows = new List<object?[]>();
@@ -392,7 +416,6 @@ internal static class SqlServerMetadata
             }
             results.Add(rows);
         }
-        return results;
     }
 
     private static IArrowArrayStream BuildObjects(List<CatalogInfo> catalogs, AdbcConnection.GetObjectsDepth depth)

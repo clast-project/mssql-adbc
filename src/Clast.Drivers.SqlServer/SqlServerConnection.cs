@@ -197,6 +197,18 @@ public sealed class SqlServerConnection : AdbcConnection
 
     public override IArrowArrayStream GetTableTypes() => SqlServerMetadata.GetTableTypes();
 
+    public override IArrowArrayStream GetStatisticsNames() => SqlServerStatistics.GetStatisticsNames();
+
+    /// <summary>
+    /// Approximate: table row counts and per-column distinct and null counts
+    /// from the server's statistics. Exact: table row counts only, by counting.
+    /// </summary>
+    public override IArrowArrayStream GetStatistics(string? catalogPattern, string? schemaPattern, string tableNamePattern, bool approximate)
+    {
+        EnsureIdle();
+        return SqlServerStatistics.GetStatistics(_session, catalogPattern, schemaPattern, tableNamePattern, approximate);
+    }
+
     // ---- Options and transactions ----
 
     public override void SetOption(string key, string value)

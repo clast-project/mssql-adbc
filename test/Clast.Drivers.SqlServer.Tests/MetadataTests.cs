@@ -271,6 +271,15 @@ public sealed class MetadataTests : IDisposable
     }
 
     [SkippableFact]
+    public void FailedMetadataQueryLeavesSessionUsable()
+    {
+        // The second result set has a type the metadata reader does not convert, which fails between result sets.
+        var session = ((SqlServerConnection)_connection).Session;
+        Assert.Throws<NotSupportedException>(() => SqlServerMetadata.Query(session, "SELECT 1; SELECT CAST(1 AS decimal(5, 1)); SELECT 2"));
+        Assert.Equal(2, (int)SqlServerMetadata.Query(session, "SELECT 2")[0][0][0]!);
+    }
+
+    [SkippableFact]
     public void GetObjectsFiltersColumns()
     {
         using RecordBatch batch = ReadSingle(_connection.GetObjects(AdbcConnection.GetObjectsDepth.All, "tempdb", "dbo", _prefix + "parent", null, "co%"));
