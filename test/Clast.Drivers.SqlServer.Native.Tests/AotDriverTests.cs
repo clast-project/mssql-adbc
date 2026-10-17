@@ -234,4 +234,51 @@ public sealed class AotDriverTests
             Assert.Equal(208, ex.NativeError);
         }
     }
+
+    /// <summary>
+    /// What the driver returns can be ingested again through the C ABI: the
+    /// extension types (datetimeoffset, uuid, json, sql_variant) come back as
+    /// storage types with metadata, which the driver restores.
+    /// </summary>
+    [SkippableFact]
+    public async Task IngestsWhatItReadThroughTheCAbi()
+    {
+        string fixture = RequireFixture();
+        using AdbcDriver driver = CAdbcDriverImporter.Load(fixture);
+        using AdbcConnection connection = ConnectToRealServer(driver, out AdbcDatabase database);
+        using (database)
+        {
+            List<RecordBatch> read;
+            using (AdbcStatement statement = connection.CreateStatement())
+            {
+                statement.SqlQuery = """
+                    SELECT CAST('2024-02-29T12:34:56.123+05:30' AS datetimeoffset(3)) AS dto,
+                           CAST('00112233-4455-6677-8899-AABBCCDDEEFF' AS uniqueidentifier) AS g,
+                           CAST(N'{"a":1}' AS json) AS j, CAST(5 AS sql_variant) AS sv
+                    """;
+                using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+                read = await ReadAll(stream);
+            }
+            RecordBatch batch = Assert.Single(read);
+            using (AdbcStatement ingest = connection.BulkIngest(null, null, "aot_reingest", BulkIngestMode.Create, isTemporary: true))
+            {
+                ingest.Bind(batch, batch.Schema);
+                Assert.Equal(1, ingest.ExecuteUpdate().AffectedRows);
+            }
+            batch.Dispose();
+
+            using AdbcStatement check = connection.CreateStatement();
+            check.SqlQuery = """
+                SELECT COUNT(*) AS n FROM #aot_reingest
+                WHERE dto = '2024-02-29T12:34:56.123+05:30' AND DATEPART(TZOFFSET, dto) = 330
+                  AND g = '00112233-4455-6677-8899-AABBCCDDEEFF' AND CAST(j AS nvarchar(max)) = N'{"a":1}'
+                  AND CAST(sv AS int) = 5 AND SQL_VARIANT_PROPERTY(sv, 'BaseType') = 'int'
+                """;
+            using IArrowArrayStream result = check.ExecuteQuery().Stream!;
+            List<RecordBatch> rows = await ReadAll(result);
+            Assert.Equal(1, Assert.IsType<Int32Array>(Assert.Single(rows).Column("n")).GetValue(0));
+            rows.ForEach(b => b.Dispose());
+        }
+    }
 }
+

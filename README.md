@@ -70,7 +70,7 @@ osx-arm64, then `ci/scripts/csharp_aot_pack.sh` packs them into
 `Clast.Drivers.SqlServer.Native`, a NuGet package of native libraries under
 `runtimes/<rid>/native/`.
 
-For example, from Python:
+`benchmarks/python/aot_vs_go.py` compares it with the Go driver, both loaded by Python's driver manager (see docs/performance.md). For example, from Python:
 
 ```python
 import adbc_driver_manager.dbapi as dbapi

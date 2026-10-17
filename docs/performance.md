@@ -143,6 +143,46 @@ Ingest varies more between consecutive iterations under BenchmarkDotNet
 (tempdb log and truncation state). The interleaved harness above is the
 better measure there.
 
+## NativeAOT vs the Go driver, from Python (medians, min-max)
+
+`benchmarks/python/aot_vs_go.py` loads both native drivers, the NativeAOT
+build of this one (`adbc_driver_sqlserver.dll`) and the Go driver 1.7.0,
+into one Python process through `adbc_driver_manager`. Both hand results
+over through the Arrow C stream interface, so the host favours neither:
+`fetch_arrow_table()` collects the batches without copying them. The test is
+the same 1M x 17 table with full TLS, the server session on CPU 12 (where
+sessions land now; CPU 16 no longer appears), 8 interleaved runs, and client
+CPU over all of the process's threads. Ingest appends the table as this
+driver reads it into an empty table, with tinyint widened to int16 for both,
+since the Go driver can't ingest uint8.
+
+| 1M rows | Wall ms | Client CPU ms |
+|---|---|---|
+| Read, NativeAOT | 444 (421-618) | 281 (250-344) |
+| Read, Go | 1657 (1622-1710) | 3766 (3609-4172) |
+| Ingest, NativeAOT | 2023 (1892-2374) | 375 (219-562) |
+| Ingest, Go | 3135 (3069-3212) | 3766 (3453-3984) |
+| Load + connect + `SELECT 1`, new process, NativeAOT | 34 (31-35) | |
+| Load + connect + `SELECT 1`, new process, Go | 29 (29-33) | |
+
+The NativeAOT driver reads 3.7x as fast as the Go driver, at 1/13 of the
+client CPU, and ingests 1.5x as fast at 1/10. Confining the client to CPUs
+0-3 changes neither driver's figures. The cold start is about the same, a
+few milliseconds apart. Go returns the same 64K-row batches, but it maps
+datetimeoffset to a UTC timestamp, dropping the offset, and marks datetime2
+as UTC.
+
+For comparison, `--analyze client` in the same placement measures the
+managed (JIT) build in a .NET process: 551 ms and 211 ms CPU to read, and
+312 ms CPU to ingest. NativeAOT costs about a third more client CPU (no
+tiered compilation or dynamic PGO), but no wall time, since reads and
+ingest are server-bound.
+
+The same harness also shows that hosting the Go driver inside .NET (through
+`CAdbcDriverImporter`, as `ReadBenchmarks` does) slows it: 2.2 s to read,
+and 6.7 s when the process is confined to CPUs 0-3, against 1.7 s from
+Python either way. Go numbers from the .NET benchmarks above understate it.
+
 ## Fabric Warehouse (remote; medians, min-max)
 
 Against a Fabric Warehouse over the internet, with an Entra access token for

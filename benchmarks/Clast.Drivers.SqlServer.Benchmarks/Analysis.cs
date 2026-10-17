@@ -60,6 +60,12 @@ internal static class Analysis
         string mode = args.Length > 1 ? args[1] : "read";
         int iterations = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 8;
         BenchmarkData.EnsureTable(Rows);
+        // Optional placement control: the server CPU every measured session must run on
+        // (MSSQL_BENCH_SERVER_CPU, see ServerPlacement), and the client CPUs.
+        if (long.TryParse(Environment.GetEnvironmentVariable("MSSQL_BENCH_CLIENT_AFFINITY"), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out long mask) && OperatingSystem.IsWindows())
+        {
+            Process.GetCurrentProcess().ProcessorAffinity = (IntPtr)mask;
+        }
         if (mode == "client")
         {
             ClientCpu.Run(iterations, args.Length > 3 ? args[3] : "read");
@@ -85,12 +91,6 @@ internal static class Analysis
         using var observer = BenchmarkSettings.NewSqlConnection(BenchmarkSettings.SqlClientConnectionString);
         observer.Open();
         var disposables = new List<IDisposable>();
-        // Optional placement control: the server CPU every measured session must run on
-        // (MSSQL_BENCH_SERVER_CPU, see ServerPlacement), and the client CPUs.
-        if (long.TryParse(Environment.GetEnvironmentVariable("MSSQL_BENCH_CLIENT_AFFINITY"), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out long mask) && OperatingSystem.IsWindows())
-        {
-            Process.GetCurrentProcess().ProcessorAffinity = (IntPtr)mask;
-        }
         List<Case> cases = mode switch
         {
             "ingest" => IngestCases(observer, disposables),

@@ -4,6 +4,7 @@
 using Apache.Arrow;
 using Apache.Arrow.Adbc;
 using Apache.Arrow.Ipc;
+using Clast.Drivers.SqlServer.Arrow;
 using Clast.Drivers.SqlServer.Tds;
 
 namespace Clast.Drivers.SqlServer;
@@ -92,16 +93,17 @@ public sealed class SqlServerStatement : AdbcStatement
         _temporary = temporary;
     }
 
+    /// <summary>Binds data for ingest or parameters; extension types that crossed the C data interface as metadata are restored.</summary>
     public override void Bind(RecordBatch batch, Schema schema)
     {
         _boundStream?.Dispose();
-        _boundStream = new SingleBatchStream(batch, schema);
+        _boundStream = BoundExtensionTypes.Resolve(new SingleBatchStream(batch, schema));
     }
 
     public override void BindStream(IArrowArrayStream stream)
     {
         _boundStream?.Dispose();
-        _boundStream = stream;
+        _boundStream = BoundExtensionTypes.Resolve(stream);
     }
 
     private static bool ParseBool(string key, string value) => value.ToLowerInvariant() switch
