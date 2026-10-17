@@ -150,14 +150,29 @@ names (`sys.objects`, not `[db].sys.objects`), and ingest's replace mode
 uses `IF OBJECT_ID(...) IS NOT NULL DROP TABLE` (Synapse has no
 `DROP TABLE IF EXISTS`).
 
-Not verified against the services, which the tests play with a fake TDS
-server, from Microsoft's documentation. Fabric's bulk load (`INSERT BULK`)
-is in preview and needs Entra authentication. Untested there:
-`sp_tablecollations_100` (undocumented; SqlClient's bulk copy relies on it
-on every engine), `GetParameterSchema` on a dedicated pool (needs
-database compatibility level 20 or higher), and DDL inside a transaction
-on a dedicated pool (unsupported, so creating a table with autocommit off
-fails there).
+Fabric Warehouse is verified against a real warehouse by `WarehouseTests`,
+which run when `MSSQL_WAREHOUSE_CONFIG_FILE` names a JSON file of driver
+options and an `accessTokenFile`. They cover the fixed isolation level,
+ingest in every mode with the type mapping (UTF-8 varchar strings included;
+Fabric's bulk load is in preview and needs Entra authentication),
+`sp_tablecollations_100`, GetTableSchema, GetObjects, statistics,
+transactions, bound parameters, GetParameterSchema and parallel reads.
+Two things it took to connect at all:
+
+- The gateway routes to `host\instance`. As in SqlClient, the connection
+  goes to the host at the port given, and LOGIN7 names the whole route.
+- The routed node refuses a login whose PRELOGIN has no TRACEID ("Couldn't
+  complete the operation due to a system update", error 18456). The driver
+  now sends one in every PRELOGIN: a new connection ID and activity ID.
+
+Fabric also reports twice the rows of a bulk load, so ingest now returns
+the rows it sent, as SqlBulkCopy does.
+
+Synapse is not verified against a real pool; the tests play it with a fake
+TDS server, from Microsoft's documentation. Untested there: GetParameterSchema
+on a dedicated pool (needs database compatibility level 20 or higher), and
+DDL inside a transaction on a dedicated pool (unsupported, so creating a
+table with autocommit off fails there).
 
 ## Encryption
 

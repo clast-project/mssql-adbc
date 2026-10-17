@@ -377,10 +377,16 @@ internal sealed class SqlServerConnectionSettings
     /// then validates and the default SPN uses), with the same credentials,
     /// database and options, and what is left of the connect timeout.
     /// </summary>
+    /// <remarks>
+    /// A route can name <c>host\instance</c> (Fabric Warehouse does). As in
+    /// SqlClient, the port given wins over the instance: the connection goes
+    /// to the host, and LOGIN7 names the whole route.
+    /// </remarks>
     public SqlServerConnectionSettings RoutedTo(string host, int port, TimeSpan timeout)
     {
         var routed = (SqlServerConnectionSettings)MemberwiseClone();
-        routed.Host = host;
+        int instance = host.IndexOf('\\');
+        routed.Host = instance >= 0 ? host.Substring(0, instance) : host;
         routed.Port = port;
         routed.PipeName = null;
         routed.InstanceName = null;

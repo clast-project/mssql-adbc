@@ -34,7 +34,7 @@ internal static class ServerPlacement
 
     public static SqlConnection OpenSqlClient(string connectionString) => OpenPlaced(() =>
     {
-        var connection = new SqlConnection(connectionString);
+        var connection = BenchmarkSettings.NewSqlConnection(connectionString);
         connection.Open();
         return connection;
     }, connection => (int)new SqlCommand(CpuQuery, connection).ExecuteScalar());

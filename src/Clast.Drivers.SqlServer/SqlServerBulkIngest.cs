@@ -139,8 +139,10 @@ internal static class SqlServerBulkIngest
         }
         session.EndRequest();
 
-        long reported = session.DrainResponse();
-        return reported >= 0 ? reported : rows;
+        // The rows sent, as SqlBulkCopy counts them: a load is all or nothing, and the
+        // counts servers report vary (Fabric Warehouse's add up to twice the rows).
+        session.DrainResponse();
+        return rows;
     }
 
     // A bulk-load message cannot be interrupted by an attention, so the sender
@@ -288,7 +290,8 @@ internal static class SqlServerBulkIngest
     {
         UInt8Type => "smallint",
         StringType or JsonType => "varchar(max)",
-        FixedSizeBinaryType f when f.ByteWidth <= 8000 && field.DataType is not GuidType => $"varbinary({f.ByteWidth})",
+        // Exactly fixed-size binary: decimals and GUIDs derive from it.
+        FixedSizeBinaryType f when f.GetType() == typeof(FixedSizeBinaryType) && f.ByteWidth <= 8000 => $"varbinary({f.ByteWidth})",
         TimestampType t => $"datetime2({Math.Min(Scale(t.Unit), 6)})",
         Time32Type t => $"time({Math.Min(Scale(t.Unit), 6)})",
         Time64Type t => $"time({Math.Min(Scale(t.Unit), 6)})",

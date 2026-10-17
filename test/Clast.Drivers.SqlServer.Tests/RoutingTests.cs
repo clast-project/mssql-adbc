@@ -131,4 +131,56 @@ public sealed class RoutingTests
         var ex = Assert.ThrowsAny<Exception>(() => new SqlServerDriver().Open(options).Connect(null));
         Assert.Contains("Invalid routing information", ex.ToString());
     }
+
+    /// <summary>Token login options for a fake server, needing no test configuration.</summary>
+    private static Dictionary<string, string> TokenOptions(int port) => new()
+    {
+        [SqlServerParameters.Server] = $"127.0.0.1,{port}",
+        [SqlServerParameters.TrustServerCertificate] = "true",
+        [SqlServerParameters.ConnectTimeout] = "5",
+        [SqlServerParameters.AccessToken] = "token",
+    };
+
+    /// <summary>
+    /// Fabric Warehouse routes to <c>host\instance</c>: the port wins, the
+    /// connection goes to the host, and LOGIN7 names the whole route, as in SqlClient.
+    /// </summary>
+    [Fact]
+    public void RouteNamingAnInstanceGoesToItsHost()
+    {
+        using var target = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.FedAuthAck(), .. FakeTdsServer.Done()]);
+        using var gateway = new FakeTdsServer((_, _) =>
+            [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.FedAuthAck(), .. FakeTdsServer.Routing(@"127.0.0.1\WAREHOUSE-dw", target.Port), .. FakeTdsServer.Done()]);
+        using AdbcConnection connection = new SqlServerDriver().Open(TokenOptions(gateway.Port)).Connect(null);
+
+        Assert.Equal($@"127.0.0.1\WAREHOUSE-dw,{target.Port}", target.Logins.Single().ServerName);
+        Assert.Equal("127.0.0.1", ((SqlServerConnection)connection).Session.Settings.Host);
+    }
+
+    /// <summary>Every PRELOGIN carries TRACEID: Fabric Warehouse refuses a routed login without it.</summary>
+    [Fact]
+    public void PreLoginCarriesATraceId()
+    {
+        using var target = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.FedAuthAck(), .. FakeTdsServer.Done()]);
+        using var gateway = new FakeTdsServer((_, _) =>
+            [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.FedAuthAck(), .. FakeTdsServer.Routing("127.0.0.1", target.Port), .. FakeTdsServer.Done()]);
+        using (new SqlServerDriver().Open(TokenOptions(gateway.Port)).Connect(null))
+        {
+        }
+
+        byte[][] preLogins = [gateway.PreLogins.Single(), target.PreLogins.Single()];
+        Guid[] ids = preLogins.Select(p =>
+        {
+            for (int i = 0; p[i] != 0xFF; i += 5)
+            {
+                if (p[i] == 0x05)
+                {
+                    Assert.Equal(36, (p[i + 3] << 8) | p[i + 4]);
+                    return new Guid(p.AsSpan((p[i + 1] << 8) | p[i + 2], 16));
+                }
+            }
+            throw new Xunit.Sdk.XunitException("No TRACEID option");
+        }).ToArray();
+        Assert.All(ids, id => Assert.NotEqual(Guid.Empty, id));
+    }
 }

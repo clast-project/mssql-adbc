@@ -22,6 +22,7 @@ public class ReadBenchmarks
     private AdbcConnection? _adbcConnection;
     private SqlConnection? _sqlConnection;
     private string _query = "";
+    private bool _warehouse;
 
     [Params(1_000_000)]
     public int Rows { get; set; }
@@ -30,7 +31,7 @@ public class ReadBenchmarks
     public string Driver { get; set; } = "";
 
     /// <summary>"full" (whole-session TLS, the default) or "login" (login-only TLS).</summary>
-    [Params("full", "login")]
+    [ParamsSource(typeof(BenchmarkSettings), nameof(BenchmarkSettings.Encryptions))]
     public string Encryption { get; set; } = "";
 
     public static IEnumerable<string> Drivers()
@@ -51,6 +52,7 @@ public class ReadBenchmarks
     {
         BenchmarkData.EnsureTable(Rows);
         _query = $"SELECT * FROM {BenchmarkData.TableName(Rows)}";
+        _warehouse = BenchmarkData.Warehouse;
 
         switch (Driver)
         {
@@ -117,7 +119,7 @@ public class ReadBenchmarks
         {
             rows++;
             sink += reader.GetInt64(0);
-            if (!reader.IsDBNull(1)) sink += reader.GetByte(1);
+            if (!reader.IsDBNull(1)) sink += _warehouse ? reader.GetInt16(1) : reader.GetByte(1);
             if (!reader.IsDBNull(2)) sink += reader.GetInt16(2);
             if (!reader.IsDBNull(3)) sink += reader.GetInt32(3);
             if (!reader.IsDBNull(4)) sink += reader.GetInt64(4);
@@ -131,7 +133,7 @@ public class ReadBenchmarks
             if (!reader.IsDBNull(12)) sink += reader.GetBytes(12, 0, binary, 0, binary.Length);
             if (!reader.IsDBNull(13)) sink += reader.GetDateTime(13).Ticks;
             if (!reader.IsDBNull(14)) sink += reader.GetDateTime(14).Ticks;
-            if (!reader.IsDBNull(15)) sink += reader.GetDateTimeOffset(15).Ticks;
+            if (!reader.IsDBNull(15)) sink += _warehouse ? reader.GetDateTime(15).Ticks : reader.GetDateTimeOffset(15).Ticks;
             if (!reader.IsDBNull(16)) sink += reader.GetGuid(16).GetHashCode();
         }
         return rows + (sink & 1);

@@ -143,6 +143,31 @@ Ingest varies more between consecutive iterations under BenchmarkDotNet
 (tempdb log and truncation state). The interleaved harness above is the
 better measure there.
 
+## Fabric Warehouse (remote; medians, min-max)
+
+Against a Fabric Warehouse over the internet, with an Entra access token for
+all three drivers, from `--analyze client`. The 1M-row table has the same
+values in the warehouse's column types (`clast_bench_types_1000000`). Client
+CPU is this process's, all threads.
+
+| Read, 1M rows (5 runs) | Wall ms | Client CPU ms |
+|---|---|---|
+| SqlClient (typed getters) | 30718 (29840-33273) | 656 (547-672) |
+| Go 1.7.0 | 36493 (35763-37933) | 6109 (5875-6562) |
+| Clast | 31680 (29884-34843) | 281 (250-375) |
+
+| Ingest, 1M rows (2 runs) | Wall ms | Client CPU ms |
+|---|---|---|
+| SqlBulkCopy | 20509 (20406-20612) | 969 (953-984) |
+| Clast | 15325 (15226-15423) | 250 (250-250) |
+
+Reads are bound by the service and the network: all three take about 30
+seconds, and the differences are within run-to-run variation, except Go's.
+The client cost is not: Clast uses 0.43x SqlClient's CPU and 0.05x Go's.
+Ingest is 25% faster than SqlBulkCopy, at a quarter of the CPU. The Go driver
+bulk-loads a warehouse only by staging through Azure storage
+(`mssql.ingest.storage_account`), so it has no ingest figure here.
+
 ## What would make single-stream reads faster
 
 Nothing on the client: the client is idle 63-81% of the time. The

@@ -19,7 +19,8 @@ internal static class Login7
     /// <param name="federatedAuthentication">Add FEDAUTHREQUIRED, as a client offering Entra authentication must.</param>
     public static byte[] BuildPreLogin(PreLoginEncryption encryption, bool federatedAuthentication = false)
     {
-        // Options: VERSION(6), ENCRYPTION(1), INSTOPT(1), THREADID(4), MARS(1), [FEDAUTHREQUIRED(1)], terminator.
+        // Options: VERSION(6), ENCRYPTION(1), INSTOPT(1), THREADID(4), MARS(1), TRACEID(36),
+        // [FEDAUTHREQUIRED(1)], terminator. Fabric Warehouse refuses a routed login without TRACEID.
         ReadOnlySpan<(PreLoginOption Option, int Length)> options = federatedAuthentication
             ?
             [
@@ -28,6 +29,7 @@ internal static class Login7
                 (PreLoginOption.InstOpt, 1),
                 (PreLoginOption.ThreadId, 4),
                 (PreLoginOption.Mars, 1),
+                (PreLoginOption.TraceId, 36),
                 (PreLoginOption.FedAuthRequired, 1),
             ]
             :
@@ -37,6 +39,7 @@ internal static class Login7
                 (PreLoginOption.InstOpt, 1),
                 (PreLoginOption.ThreadId, 4),
                 (PreLoginOption.Mars, 1),
+                (PreLoginOption.TraceId, 36),
             ];
 
         int headerLength = options.Length * 5 + 1;
@@ -69,6 +72,11 @@ internal static class Login7
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(position), Environment.CurrentManagedThreadId);
         position += 4;
         payload[position++] = 0; // MARS off
+        // TRACEID: a new client connection ID and activity ID, then the activity sequence.
+        Guid.NewGuid().TryWriteBytes(payload.AsSpan(position));
+        Guid.NewGuid().TryWriteBytes(payload.AsSpan(position + 16));
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(position + 32), 0);
+        position += 36;
         if (federatedAuthentication)
         {
             payload[position] = 1; // FEDAUTHREQUIRED

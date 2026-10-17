@@ -50,6 +50,11 @@ internal static class Analysis
         string mode = args.Length > 1 ? args[1] : "read";
         int iterations = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 8;
         BenchmarkData.EnsureTable(Rows);
+        if (mode == "client")
+        {
+            ClientCpu.Run(iterations, args.Length > 3 ? args[3] : "read");
+            return;
+        }
         if (mode == "sessions")
         {
             CompareSessions();
@@ -67,7 +72,7 @@ internal static class Analysis
             return;
         }
 
-        using var observer = new SqlConnection(BenchmarkSettings.SqlClientConnectionString);
+        using var observer = BenchmarkSettings.NewSqlConnection(BenchmarkSettings.SqlClientConnectionString);
         observer.Open();
         var disposables = new List<IDisposable>();
         // Optional placement control: the server CPU every measured session must run on
@@ -122,7 +127,7 @@ internal static class Analysis
         using var stop = new CancellationTokenSource();
         Task sampler = Task.Factory.StartNew(() =>
         {
-            using var probe = new SqlConnection(BenchmarkSettings.SqlClientConnectionString);
+            using var probe = BenchmarkSettings.NewSqlConnection(BenchmarkSettings.SqlClientConnectionString);
             probe.Open();
             using var command = new SqlCommand(
                 "SELECT s.cpu_id FROM sys.dm_exec_requests r JOIN sys.dm_os_schedulers s ON s.scheduler_id = r.scheduler_id WHERE r.session_id = @s", probe);
@@ -245,11 +250,11 @@ internal static class Analysis
     private static void CompareSessions()
     {
         using AdbcConnection clast = new SqlServerDriver().Open(BenchmarkSettings.ClastOptionsFor("full")).Connect(null);
-        using var sql = new SqlConnection(BenchmarkSettings.SqlClientConnectionStringFor("full"));
+        using var sql = BenchmarkSettings.NewSqlConnection(BenchmarkSettings.SqlClientConnectionStringFor("full"));
         sql.Open();
         int clastSession = AdbcSessionId(clast);
 
-        using var observer = new SqlConnection(BenchmarkSettings.SqlClientConnectionString);
+        using var observer = BenchmarkSettings.NewSqlConnection(BenchmarkSettings.SqlClientConnectionString);
         observer.Open();
         using var command = new SqlCommand("""
             SELECT s.*, c.*, r.scheduler_id FROM sys.dm_exec_sessions s

@@ -40,6 +40,11 @@ Tests that need a server read a JSON file named by `MSSQL_TEST_CONFIG_FILE`;
 see `test/Clast.Drivers.SqlServer.Tests/Resources/mssqlconfig.json`. The server
 must have the TCP protocol enabled.
 
+`WarehouseTests` run against a Fabric Warehouse when `MSSQL_WAREHOUSE_CONFIG_FILE`
+names a JSON file with `options` (`adbc.mssql.server`, `adbc.mssql.database`) and
+an `accessTokenFile`: the path of a file holding an Entra access token for
+`https://database.windows.net/`. They create and drop tables named `clast_wh_*`.
+
 ## Benchmarks
 
 ```
@@ -52,6 +57,12 @@ dotnet run -c Release --project benchmarks/Clast.Drivers.SqlServer.Benchmarks
 | `MSSQL_BENCH_GO_DRIVER` | Path to the Go MSSQL ADBC driver library; enables the Go case |
 | `MSSQL_BENCH_GO_URI` | `uri` option for the Go driver |
 | `MSSQL_BENCH_CLAST` | `1` to include this driver |
+| `MSSQL_BENCH_SERVER`, `MSSQL_BENCH_DATABASE` | Server and database for all drivers (default `localhost`, `tempdb`) |
+| `MSSQL_BENCH_ACCESS_TOKEN_FILE` | File holding an Entra access token, for all three drivers to log in with instead of integrated authentication (Fabric, Azure SQL) |
+
+`-- --analyze client [iterations] [read|ingest]` reports wall time and client CPU
+per driver, interleaved, and needs nothing from the server; it suits remote
+services. On a Fabric Warehouse the benchmark tables are named `clast_bench_*`.
 
 ## License
 

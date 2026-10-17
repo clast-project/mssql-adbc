@@ -53,6 +53,9 @@ internal sealed class FakeTdsServer : IDisposable
 
     public ConcurrentQueue<Login> Logins { get; } = new();
 
+    /// <summary>Each PRELOGIN payload as received.</summary>
+    public ConcurrentQueue<byte[]> PreLogins { get; } = new();
+
     /// <summary>The tokens answering a SQL batch, given its text; by default DONE.</summary>
     public Func<string, byte[]>? Batch { get; init; }
 
@@ -215,6 +218,7 @@ internal sealed class FakeTdsServer : IDisposable
     private void Serve(NetworkStream network, int index)
     {
         (byte _, byte[] preLogin) = ReadMessage(network);
+        PreLogins.Enqueue(preLogin);
         bool fedAuthRequired = PreLoginOption(preLogin, 0x06) is [1, ..];
 
         // PRELOGIN response: VERSION, ENCRYPTION (ON, or NOT_SUP), FEDAUTHREQUIRED = 1.

@@ -19,7 +19,9 @@ namespace Clast.Drivers.SqlServer.Benchmarks;
 [MemoryDiagnoser]
 public class IngestBenchmarks
 {
-    private const string TargetTable = "dbo.bench_ingest_target";
+    private static string TargetName => BenchmarkData.Prefix + "ingest_target";
+
+    private static string TargetTable => "dbo." + TargetName;
 
     private List<RecordBatch> _batches = new();
     private DataTable? _table;
@@ -160,7 +162,7 @@ public class IngestBenchmarks
         }
 
         using AdbcStatement statement = _adbcConnection!.CreateStatement();
-        statement.SetOption(AdbcOptions.Ingest.TargetTable, "bench_ingest_target");
+        statement.SetOption(AdbcOptions.Ingest.TargetTable, TargetName);
         statement.SetOption(AdbcOptions.Ingest.TargetDbSchema, "dbo");
         statement.SetOption(AdbcOptions.Ingest.Mode, AdbcOptions.IngestMode.Append);
         if (TableLock && Driver == "Clast")

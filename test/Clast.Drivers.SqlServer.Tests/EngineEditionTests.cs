@@ -121,10 +121,10 @@ public sealed class EngineEditionTests
         Schema schema = Fields(
             UInt8Type.Default, StringType.Default, JsonType.Default, new FixedSizeBinaryType(4),
             new TimestampType(TimeUnit.Nanosecond, (string?)null), new TimestampType(TimeUnit.Microsecond, "UTC"),
-            new Time64Type(TimeUnit.Nanosecond), Int32Type.Default, BinaryType.Default);
+            new Time64Type(TimeUnit.Nanosecond), Int32Type.Default, BinaryType.Default, new Decimal128Type(18, 4));
         Assert.Equal(
             "CREATE TABLE [dbo].[t] ([c0] smallint NULL, [c1] varchar(max) NULL, [c2] varchar(max) NULL, [c3] varbinary(4) NULL, " +
-            "[c4] datetime2(6) NULL, [c5] datetime2(6) NULL, [c6] time(6) NULL, [c7] int NULL, [c8] varbinary(max) NULL)",
+            "[c4] datetime2(6) NULL, [c5] datetime2(6) NULL, [c6] time(6) NULL, [c7] int NULL, [c8] varbinary(max) NULL, [c9] decimal(18,4) NULL)",
             SqlServerBulkIngest.CreateTableSql(Target, schema, EngineEdition.Warehouse));
     }
 
