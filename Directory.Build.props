@@ -1,0 +1,35 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Authors>clast-project</Authors>
+    <Copyright>Copyright (c) clast-project</Copyright>
+  </PropertyGroup>
+
+  <!--
+    Location of the Apache Arrow ADBC C# sources. This is a local checkout for
+    now; it is expected to become a submodule later, at which point only this
+    default needs to change. Override with -p:AdbcCSharpRoot=... if needed.
+  -->
+  <PropertyGroup>
+    <AdbcCSharpRoot Condition="'$(AdbcCSharpRoot)' == ''">C:\src\GitHub\arrow-adbc-2\csharp</AdbcCSharpRoot>
+    <AdbcProject>$(AdbcCSharpRoot)\src\Apache.Arrow.Adbc\Apache.Arrow.Adbc.csproj</AdbcProject>
+  </PropertyGroup>
+
+  <!--
+    Strong naming, shared with the other clast-project repositories so every
+    Clast.* assembly carries public key token 0b0eddb1936076d9. The key is
+    committed deliberately: a strong name provides identity, not security.
+  -->
+  <PropertyGroup>
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)Clast.snk</AssemblyOriginatorKeyFile>
+    <ClastPublicKey>00240000048000001401000006020000002400005253413100080000010001000594feb31648818f936120bdb332c64d73cbfb85079c1d80e4cbc808b5df489e5145ec7adf075c12e8af5246451e3e72740b57c162225b80bfcb0b71762985a05e4b9cfc8197a88a5c957ee25d702ababe81192f61be33cbbb5c9fbc9a083561d740fb257ccb9b7af648b91d9742511e3f24edae52bb9a86263902c5e5c87cc81f9384cc45862a23151cf6a33090fc77066c8a108c035c40a6aa34316b70cc7593716fd5f79e6874ff3fa19715658c0eef13339382d58b4bcdfd241b0d305291c16ce0f562f4e3657ccc8759df805b544a4db986dfab63fe691a17d1f1ef2fffc0f186aff0b79f61d4dbc57e91f79b539b5211d8729891eb7e600fd1301bcaa8</ClastPublicKey>
+  </PropertyGroup>
+
+</Project>

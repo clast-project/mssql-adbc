@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Clast.Drivers.SqlServer.Benchmarks/Clast.Drivers.SqlServer.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Clast.Drivers.SqlServer/Clast.Drivers.SqlServer.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Clast.Drivers.SqlServer.Tests/Clast.Drivers.SqlServer.Tests.csproj" />
+  </Folder>
+  <Project Path="../arrow-adbc-2/csharp/src/Apache.Arrow.Adbc/Apache.Arrow.Adbc.csproj" />
+</Solution>

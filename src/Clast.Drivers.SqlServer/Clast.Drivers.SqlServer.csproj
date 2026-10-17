@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Clast.Drivers.SqlServer</AssemblyName>
+    <RootNamespace>Clast.Drivers.SqlServer</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <Version>0.0.0-dev</Version>
+    <Description>ADBC driver for Microsoft SQL Server and other TDS-compatible databases.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Clast.Drivers.SqlServer.Tests" Key="$(ClastPublicKey)" />
+    <InternalsVisibleTo Include="Clast.Drivers.SqlServer.Benchmarks" Key="$(ClastPublicKey)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Apache.Arrow" />
+    <ProjectReference Include="$(AdbcProject)" />
+  </ItemGroup>
+
+</Project>

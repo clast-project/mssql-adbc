@@ -1,0 +1,9 @@
+{
+  "options": {
+    "adbc.mssql.server": "localhost",
+    "adbc.mssql.database": "master",
+    "adbc.mssql.integrated_security": "true",
+    "adbc.mssql.trust_server_certificate": "true"
+  },
+  "sqlClientConnectionString": "Server=tcp:localhost;Database=master;Integrated Security=true;TrustServerCertificate=true"
+}
