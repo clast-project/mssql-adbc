@@ -8,5 +8,7 @@
   <Folder Name="/test/">
     <Project Path="test/Clast.Drivers.SqlServer.Tests/Clast.Drivers.SqlServer.Tests.csproj" />
   </Folder>
-  <Project Path="../arrow-adbc-2/csharp/src/Apache.Arrow.Adbc/Apache.Arrow.Adbc.csproj" />
+  <Folder Name="/external/">
+    <Project Path="external/arrow-adbc/csharp/src/Apache.Arrow.Adbc/Apache.Arrow.Adbc.csproj" />
+  </Folder>
 </Solution>

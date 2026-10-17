@@ -8,12 +8,18 @@ Part of the clast-project. Status: early prototype.
 
 ## Building
 
-The driver references the ADBC C# sources from a local checkout, set by
-`AdbcCSharpRoot` in `Directory.Build.props`:
+The driver builds against the ADBC C# sources in the `external/arrow-adbc`
+submodule (a shallow clone of [apache/arrow-adbc](https://github.com/apache/arrow-adbc)),
+until an ADBC release has the APIs it uses:
 
 ```
+git clone --recurse-submodules https://github.com/clast-project/mssql-adbc.git
+cd mssql-adbc
 dotnet build -c Release
 ```
+
+In an existing clone, run `git submodule update --init` first. To build
+against another ADBC checkout, pass `-p:AdbcCSharpRoot=<path>\csharp`.
 
 ## Testing
 

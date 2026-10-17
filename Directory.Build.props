@@ -12,12 +12,14 @@
   </PropertyGroup>
 
   <!--
-    Location of the Apache Arrow ADBC C# sources. This is a local checkout for
-    now; it is expected to become a submodule later, at which point only this
-    default needs to change. Override with -p:AdbcCSharpRoot=... if needed.
+    Location of the Apache Arrow ADBC C# sources: the external/arrow-adbc
+    submodule (clone with recurse-submodules, or run "git submodule update
+    init"). To be replaced by a package reference once an ADBC release has
+    the APIs used here. Override with -p:AdbcCSharpRoot=... to build against
+    another checkout.
   -->
   <PropertyGroup>
-    <AdbcCSharpRoot Condition="'$(AdbcCSharpRoot)' == ''">C:\src\GitHub\arrow-adbc-2\csharp</AdbcCSharpRoot>
+    <AdbcCSharpRoot Condition="'$(AdbcCSharpRoot)' == ''">$(MSBuildThisFileDirectory)external\arrow-adbc\csharp</AdbcCSharpRoot>
     <AdbcProject>$(AdbcCSharpRoot)\src\Apache.Arrow.Adbc\Apache.Arrow.Adbc.csproj</AdbcProject>
   </PropertyGroup>
 
