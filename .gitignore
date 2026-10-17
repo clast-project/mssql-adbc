@@ -259,3 +259,6 @@ BenchmarkDotNet.Artifacts/
 
 # add .sln files back because they are ignored by the root .gitignore file
 !*.sln
+
+# NativeAOT libraries staged for packing (ci/scripts/csharp_aot_pack.sh).
+src/Clast.Drivers.SqlServer.Native/runtimes/

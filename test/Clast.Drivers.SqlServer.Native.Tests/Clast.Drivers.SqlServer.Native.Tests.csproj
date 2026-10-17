@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Loads the NativeAOT-published driver (Clast.Drivers.SqlServer.Native)
+    through CAdbcDriverImporter and drives it over the C ABI: against the fake
+    TDS server, and against a real server when MSSQL_TEST_CONFIG_FILE names
+    one. The library is published out of band (ci/scripts/csharp_aot.sh), and
+    found through ADBC_TEST_AOT_FIXTURE_PATH; without it the tests skip.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Xunit.SkippableFact" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- For SqlServerParameters, and the internals the fake TDS server uses. -->
+    <ProjectReference Include="..\..\src\Clast.Drivers.SqlServer\Clast.Drivers.SqlServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Clast.Drivers.SqlServer.Tests\FakeTdsServer.cs" Link="FakeTdsServer.cs" />
+    <Compile Include="..\Clast.Drivers.SqlServer.Tests\SqlServerTestConfiguration.cs" Link="SqlServerTestConfiguration.cs" />
+  </ItemGroup>
+</Project>

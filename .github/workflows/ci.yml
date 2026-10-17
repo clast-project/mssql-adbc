@@ -93,3 +93,87 @@ jobs:
         env:
           MSSQL_TEST_CONFIG_FILE: ${{ runner.temp }}/mssqlconfig.json
         run: dotnet test -c Release --no-build --logger "console;verbosity=normal"
+      # The NativeAOT library's interop tests, including those that need a server.
+      - name: Publish AOT driver and run interop tests against SQL Server
+        env:
+          MSSQL_TEST_CONFIG_FILE: ${{ runner.temp }}/mssqlconfig.json
+        run: ./ci/scripts/csharp_aot.sh "${{ github.workspace }}" linux-x64
+
+  # Publishes the driver as a NativeAOT shared library for each platform and
+  # drives it through CAdbcDriverImporter over the C ABI (against the fake TDS
+  # server here; the job above adds a real server). It catches what only AOT
+  # breaks: trimmed-away code, reflection, missing exports, Arrow C data
+  # interface marshaling. The same layout as the adbc-drivers HiveServer2
+  # driver's csharp-aot job.
+  aot:
+    name: NativeAOT driver (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: macos-latest
+            rid: osx-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Set up MSVC (NativeAOT links with it)
+        if: runner.os == 'Windows'
+        # Third-party: activates vcvars64 so the ILCompiler's link step finds
+        # link.exe and the Windows SDK. Pinned to a SHA, as in HiveServer2.
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
+      - name: Publish AOT driver and run interop tests
+        shell: bash
+        run: ./ci/scripts/csharp_aot.sh "${{ github.workspace }}" "${{ matrix.rid }}"
+      # Only reached when the interop tests pass, so a library that fails them
+      # is never packaged. The library alone: no debug symbols.
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: aot-native-${{ matrix.rid }}
+          path: |
+            ${{ github.workspace }}/artifacts/aot-fixture/*.so
+            ${{ github.workspace }}/artifacts/aot-fixture/*.dylib
+            ${{ github.workspace }}/artifacts/aot-fixture/*.dll
+          if-no-files-found: error
+
+  # Gathers the per-platform libraries into one multi-RID NuGet package
+  # (runtimes/<rid>/native/...), once every platform has passed: NativeAOT
+  # can't cross-compile.
+  aot-pack:
+    name: NativeAOT driver package
+    runs-on: ubuntu-latest
+    needs: aot
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Download per-platform native libraries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: aot-native-*
+          path: ${{ github.workspace }}/native-artifacts
+      - name: Pack native NuGet package
+        run: |
+          ./ci/scripts/csharp_aot_pack.sh "${{ github.workspace }}" "${{ github.workspace }}/native-artifacts" "${{ github.workspace }}/artifacts/packages"
+      - name: Upload native package
+        uses: actions/upload-artifact@v7
+        with:
+          name: aot-native-nupkg
+          path: ${{ github.workspace }}/artifacts/packages/*.nupkg
+          if-no-files-found: error

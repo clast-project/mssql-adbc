@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The SQL Server ADBC driver, NativeAOT-compiled into a shared library that
+    exports `AdbcDriverInit` (CAdbcDriverExporter around a new
+    SqlServerDriver), and shipped as a native NuGet package under
+    runtimes/<rid>/native/. The same layout as the adbc-drivers HiveServer2
+    driver's AdbcDrivers.HiveServer2.Native.
+
+    Two flows:
+      * `dotnet publish -c Release -r <rid>` produces the native shared library
+        for one RID. A plain `dotnet build` only produces a managed stub.
+      * `dotnet pack -p:IsPackagingPipeline=true` gathers the per-RID libraries
+        that CI staged under runtimes/<rid>/native/ into one multi-RID package.
+        NativeAOT can't cross-compile, so each RID is published on its own OS
+        runner and the libraries are collected before packing (the aot and
+        aot-pack jobs in .github/workflows/ci.yml).
+
+    Clast.Drivers.SqlServer.Native.Tests loads a published library through
+    CAdbcDriverImporter and drives it over the C ABI.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <!--
+      Named for the ADBC driver convention (adbc_driver_<name>), not for the
+      project: the driver manager and `dbc` find drivers by that name, and the
+      ADBC Driver Foundry tooling derives the driver name by splitting the file
+      name on `_`. "sqlserver", since "mssql" is the Go driver's. NativeAOT
+      omits the `lib` prefix on Unix, which that tooling tolerates.
+    -->
+    <AssemblyName>adbc_driver_sqlserver</AssemblyName>
+    <!-- Both default to $(AssemblyName); keep the rename out of the namespace and the package. -->
+    <RootNamespace>Clast.Drivers.SqlServer.Native</RootNamespace>
+    <PackageId>Clast.Drivers.SqlServer.Native</PackageId>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- Strong naming means nothing for a native shared library. -->
+    <SignAssembly>false</SignAssembly>
+    <PublishRepositoryUrl>false</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <!--
+    Packaging is opt-in and only meaningful in CI, where the per-RID native
+    libraries have been staged under runtimes/; a solution-wide `dotnet pack`
+    leaves this project alone rather than emit an empty package.
+  -->
+  <PropertyGroup>
+    <IsPackagingPipeline Condition="'$(IsPackagingPipeline)' == ''">false</IsPackagingPipeline>
+    <IsPackable>$(IsPackagingPipeline)</IsPackable>
+    <!-- A native runtime package: only runtimes/<rid>/native/, no managed assembly, dependencies or symbols. -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <Description>NativeAOT-compiled SQL Server ADBC driver, as native shared libraries under runtimes/{rid}/native. Load it through the ADBC driver manager (C ABI).</Description>
+    <!-- NU5128: a native-only package intentionally has no lib/ or ref/ assembly. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackagingPipeline)' == 'true'">
+    <!-- A per-file PackagePath: one ending in a directory makes NuGet append the relative path again. -->
+    <None Include="runtimes/**/*">
+      <Pack>true</Pack>
+      <PackagePath>runtimes/%(RecursiveDir)%(Filename)%(Extension)</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Clast.Drivers.SqlServer\Clast.Drivers.SqlServer.csproj" />
+  </ItemGroup>
+</Project>

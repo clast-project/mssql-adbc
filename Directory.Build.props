@@ -9,6 +9,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Authors>clast-project</Authors>
     <Copyright>Copyright (c) clast-project</Copyright>
+    <!-- Shared by the managed and native (NativeAOT) driver packages. -->
+    <Version>0.0.0-dev</Version>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
   </PropertyGroup>
 
   <!--

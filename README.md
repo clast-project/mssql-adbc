@@ -47,6 +47,41 @@ against that build as well. Compared with the .NET 10 build:
 - It is written for correctness rather than speed: newer .NET's span-based
   APIs are filled in over arrays, and 128-bit decimals use a portable integer.
 
+## NativeAOT driver
+
+`src/Clast.Drivers.SqlServer.Native` compiles the driver with NativeAOT into a
+native shared library, `adbc_driver_sqlserver` (`.dll`, `.so` or `.dylib`).
+It exports `AdbcDriverInit` and needs no .NET runtime, so any ADBC driver
+manager can load it: C/C++, Python's `adbc_driver_manager`, Go, Rust or R.
+The layout follows the adbc-drivers HiveServer2 driver.
+
+```
+dotnet publish src/Clast.Drivers.SqlServer.Native -c Release -r win-x64 -o artifacts/aot-fixture
+```
+
+NativeAOT doesn't cross-compile, so publish on the target platform. On
+Windows it links with MSVC: use a Developer shell, or put `vswhere.exe` (in
+`Microsoft Visual Studio\Installer`) on PATH. Elsewhere it needs clang.
+`ci/scripts/csharp_aot.sh <workspace> <rid>` publishes and runs
+`test/Clast.Drivers.SqlServer.Native.Tests` against the library. Those tests
+cover the fake TDS server, and also a real server when
+`MSSQL_TEST_CONFIG_FILE` is set. CI builds win-x64, linux-x64, linux-arm64 and
+osx-arm64, then `ci/scripts/csharp_aot_pack.sh` packs them into
+`Clast.Drivers.SqlServer.Native`, a NuGet package of native libraries under
+`runtimes/<rid>/native/`.
+
+For example, from Python:
+
+```python
+import adbc_driver_manager.dbapi as dbapi
+
+with dbapi.connect(driver="adbc_driver_sqlserver.dll", db_kwargs={
+        "adbc.mssql.server": "localhost", "adbc.mssql.integrated_security": "true"}) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT name FROM sys.databases")
+        print(cur.fetch_arrow_table())
+```
+
 ## Testing
 
 Tests that need a server read a JSON file named by `MSSQL_TEST_CONFIG_FILE`;

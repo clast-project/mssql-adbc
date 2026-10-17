@@ -4,9 +4,11 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Clast.Drivers.SqlServer/Clast.Drivers.SqlServer.csproj" />
+    <Project Path="src/Clast.Drivers.SqlServer.Native/Clast.Drivers.SqlServer.Native.csproj" />
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/Clast.Drivers.SqlServer.Tests/Clast.Drivers.SqlServer.Tests.csproj" />
+    <Project Path="test/Clast.Drivers.SqlServer.Native.Tests/Clast.Drivers.SqlServer.Native.Tests.csproj" />
   </Folder>
   <Folder Name="/external/">
     <Project Path="external/arrow-adbc/csharp/src/Apache.Arrow.Adbc/Apache.Arrow.Adbc.csproj" />
