@@ -143,6 +143,12 @@ public sealed class SqlServerConnection : AdbcConnection
         }
     }
 
+    public override IArrowArrayStream GetInfo(IReadOnlyList<AdbcInfoCode> codes)
+    {
+        ArgumentNullException.ThrowIfNull(codes);
+        return SqlServerMetadata.GetInfo(_session, codes);
+    }
+
     public override IArrowArrayStream GetObjects(
         GetObjectsDepth depth,
         string? catalogPattern,
@@ -151,18 +157,17 @@ public sealed class SqlServerConnection : AdbcConnection
         IReadOnlyList<string>? tableTypes,
         string? columnNamePattern)
     {
-        throw AdbcException.NotImplemented("GetObjects is not yet supported");
+        EnsureIdle();
+        return SqlServerMetadata.GetObjects(_session, depth, catalogPattern, dbSchemaPattern, tableNamePattern, tableTypes, columnNamePattern);
     }
 
     public override Schema GetTableSchema(string? catalog, string? dbSchema, string tableName)
     {
-        throw AdbcException.NotImplemented("GetTableSchema is not yet supported");
+        EnsureIdle();
+        return SqlServerMetadata.GetTableSchema(_session, catalog, dbSchema, tableName);
     }
 
-    public override IArrowArrayStream GetTableTypes()
-    {
-        throw AdbcException.NotImplemented("GetTableTypes is not yet supported");
-    }
+    public override IArrowArrayStream GetTableTypes() => SqlServerMetadata.GetTableTypes();
 
     /// <summary>
     /// Cancels the operation in progress on this connection, including the

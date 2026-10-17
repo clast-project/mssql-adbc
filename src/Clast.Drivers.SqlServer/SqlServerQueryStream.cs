@@ -21,12 +21,20 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
     private readonly ColumnDecoder[] _decoders;
     private readonly int _batchRows;
     private readonly byte[] _nullBitmap;
+    private readonly bool _stopAtResultEnd;
     private bool _resultComplete;
     private bool _finished;
 
-    public SqlServerQueryStream(TdsSession session, TdsColumn[] columns)
+    /// <param name="stopAtResultEnd">
+    /// Stop at the end of this result set and leave the rest of the response
+    /// unread, so the caller can go on to the next result set with
+    /// <see cref="TdsSession.ReadUntilResultSet"/>. Otherwise the rest of the
+    /// response is skipped.
+    /// </param>
+    public SqlServerQueryStream(TdsSession session, TdsColumn[] columns, bool stopAtResultEnd = false)
     {
         _session = session;
+        _stopAtResultEnd = stopAtResultEnd;
         _columns = columns;
         _batchRows = session.Settings.BatchRows;
         _decoders = new ColumnDecoder[columns.Length];
@@ -184,7 +192,10 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
         }
         _finished = true;
         _session.ActiveStream = null;
-        _session.DrainResponse(_resultComplete ? null : _columns);
+        if (!(_stopAtResultEnd && _resultComplete))
+        {
+            _session.DrainResponse(_resultComplete ? null : _columns);
+        }
     }
 
     public void Dispose()
