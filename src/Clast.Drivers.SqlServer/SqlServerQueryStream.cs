@@ -40,6 +40,31 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
         session.ActiveStream = this;
     }
 
+    /// <summary>Sends a batch on <paramref name="session"/> and returns a stream over its first result set.</summary>
+    public static IArrowArrayStream Execute(TdsSession session, string sql)
+    {
+        session.SendSqlBatch(sql);
+        session.Reader.BeginMessage();
+
+        TdsColumn[]? columns = session.ReadUntilResultSet();
+        if (columns == null)
+        {
+            return Empty();
+        }
+
+        try
+        {
+            return new SqlServerQueryStream(session, columns);
+        }
+        catch
+        {
+            // Unsupported column type: leave the session usable.
+            session.ActiveStream = null;
+            session.DrainResponse(columns);
+            throw;
+        }
+    }
+
     /// <summary>A stream for a response that produced no result set.</summary>
     public static IArrowArrayStream Empty() => new EmptyStream();
 

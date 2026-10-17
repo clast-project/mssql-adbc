@@ -47,6 +47,13 @@ public static class SqlServerParameters
     /// <summary>Statement option: number of partitions <c>ExecutePartitioned</c> produces (default 1).</summary>
     public const string PartitionCount = "adbc.mssql.partition.count";
 
+    /// <summary>
+    /// Number of sessions <c>ExecuteQuery</c> reads with in parallel (default 1).
+    /// Needs <see cref="PartitionColumn"/>; batches arrive in no particular order.
+    /// Settable on the database, connection or statement.
+    /// </summary>
+    public const string ParallelReads = "adbc.mssql.parallel_reads";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 }

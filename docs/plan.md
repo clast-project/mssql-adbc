@@ -101,5 +101,13 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
   TLS this driver and SqlClient are within run-to-run noise, which varies by
   connection (std. dev. up to ~190 ms); login-only lets this driver use
   32767-byte packets. Full encryption stays the default.
+- Single-stream parallel reads (`adbc.mssql.parallel_reads=N` with a
+  partition column): ExecuteQuery plans 4 partitions per worker, N workers
+  read them on the connection's session plus pooled helper sessions, and
+  batches are merged unordered through a bounded channel. 1M rows: ~700 ms
+  (1) → 312 (2) → 261 (4) → 153 (8) → 135 ms (16). Over-partitioning keeps
+  one slow session from setting the pace (4 workers: std. dev. 225 → 18 ms).
+  Falls back to a single stream inside a transaction; local temp tables are
+  not visible to helper sessions.
 - Next lever: read-ahead to overlap TLS decryption with decoding when
   decoding cost becomes visible.

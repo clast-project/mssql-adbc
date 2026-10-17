@@ -40,6 +40,7 @@ internal sealed class SqlServerConnectionSettings
     public string ApplicationName { get; private set; } = "Clast.Drivers.SqlServer";
     public TimeSpan ConnectTimeout { get; private set; } = TimeSpan.FromSeconds(15);
     public int BatchRows { get; private set; } = 65536;
+    public int ParallelReads { get; private set; } = 1;
 
     public static SqlServerConnectionSettings Parse(IReadOnlyDictionary<string, string> options)
     {
@@ -106,6 +107,11 @@ internal sealed class SqlServerConnectionSettings
             settings.BatchRows = rows;
         }
 
+        if (options.TryGetValue(SqlServerParameters.ParallelReads, out string? parallel))
+        {
+            settings.ParallelReads = ParseParallelReads(parallel);
+        }
+
         if (!settings.IntegratedSecurity && settings.Username == null)
         {
             throw new AdbcException(
@@ -160,6 +166,12 @@ internal sealed class SqlServerConnectionSettings
         }
 
         Host = NormalizeHost(value);
+    }
+
+    public static int ParseParallelReads(string value)
+    {
+        int count = ParseInt(SqlServerParameters.ParallelReads, value);
+        return count is >= 1 and <= 256 ? count : throw InvalidOption(SqlServerParameters.ParallelReads, value);
     }
 
     private static string NormalizeHost(string host) =>
