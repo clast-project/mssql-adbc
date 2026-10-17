@@ -30,7 +30,7 @@ internal sealed class FakeTdsServer : IDisposable
     /// <summary>What a client's LOGIN7 carried.</summary>
     public sealed record Login(
         bool PreLoginFedAuthRequired, string UserName, bool IntegratedSecurity, string ServerName, string Database,
-        byte FedAuthLibrary, bool FedAuthEcho, string? Token, byte Workflow);
+        byte FedAuthLibrary, bool FedAuthEcho, string? Token, byte Workflow, IReadOnlyList<byte> Features);
 
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly Func<Login, int, byte[]> _respond;
@@ -171,6 +171,31 @@ internal sealed class FakeTdsServer : IDisposable
         // Old value: an empty (zero-length) value.
         return token;
     }
+
+    /// <summary>ENVCHANGE type 21: route the client to <paramref name="host"/>:<paramref name="port"/> and <paramref name="database"/>.</summary>
+    public static byte[] EnhancedRouting(string host, int port, string database)
+    {
+        byte[] name = Encoding.Unicode.GetBytes(host);
+        byte[] db = Encoding.Unicode.GetBytes(database);
+        int valueLength = 1 + 2 + 2 + name.Length + 2 + db.Length;
+        int length = 1 + 2 + valueLength + 2;
+        var token = new byte[3 + length];
+        token[0] = 0xE3;
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(1), (ushort)length);
+        token[3] = 21;
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(4), (ushort)valueLength);
+        token[6] = 0;
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(7), (ushort)port);
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(9), (ushort)host.Length);
+        name.CopyTo(token, 11);
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(11 + name.Length), (ushort)database.Length);
+        db.CopyTo(token, 13 + name.Length);
+        // Old value: an empty (zero-length) value.
+        return token;
+    }
+
+    /// <summary>FEATUREEXTACK acknowledging enhanced routing (feature 0x0F) with <paramref name="value"/>.</summary>
+    public static byte[] EnhancedRoutingAck(byte value = 1) => [0xAE, 0x0F, 1, 0, 0, 0, value, 0xFF];
 
     // ---- Server ----
 
@@ -317,9 +342,11 @@ internal sealed class FakeTdsServer : IDisposable
         byte library = 0, workflow = 0;
         bool echo = false;
         string? token = null;
+        var ids = new List<byte>();
         for (int i = features; login[i] != 0xFF;)
         {
             byte id = login[i];
+            ids.Add(id);
             int length = BinaryPrimitives.ReadInt32LittleEndian(login.AsSpan(i + 1));
             ReadOnlySpan<byte> data = login.AsSpan(i + 5, length);
             if (id == 0x02)
@@ -338,7 +365,7 @@ internal sealed class FakeTdsServer : IDisposable
             }
             i += 5 + length;
         }
-        return new Login(preLoginFedAuthRequired, userName, integrated, serverName, database, library, echo, token, workflow);
+        return new Login(preLoginFedAuthRequired, userName, integrated, serverName, database, library, echo, token, workflow, ids);
     }
 
     private static byte[]? PreLoginOption(byte[] payload, byte option)

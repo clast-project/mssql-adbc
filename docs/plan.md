@@ -109,8 +109,15 @@ the host and port named, with the same credentials, database and options,
 validating TLS against the new host name and sending `host,port` as the
 LOGIN7 server name, as SqlClient does. It follows up to 10 routes within the
 original connect timeout. Parallel-read helper sessions start from the
-original server and are routed in turn. Enhanced routing (feature 0x0F,
-which can also name a database) is not requested yet.
+original server and are routed in turn.
+
+Enhanced routing is requested too (feature extension 0x0F). A server that
+acknowledges it can route with ENVCHANGE 21, which also names the database:
+the login is repeated at that server and database, while the connection's
+original settings (and so parallel-read sessions) keep the database asked
+for. As in SqlClient, an enhanced route from a server that did not
+acknowledge the feature is ignored and the session stays where it logged in;
+one without a database is a protocol error.
 
 ## Connect retry
 

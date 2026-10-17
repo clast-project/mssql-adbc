@@ -6,6 +6,8 @@
     <TargetFrameworks>net10.0</TargetFrameworks>
     <!-- The netstandard2.0 build, on .NET Framework (Windows only). -->
     <TargetFrameworks Condition="'$(OS)' == 'Windows_NT'">net10.0;net472</TargetFrameworks>
+    <!-- One framework at a time: the tests share server state (LocalDB's instance, which they stop and start). -->
+    <TestTfmsInParallel>false</TestTfmsInParallel>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>

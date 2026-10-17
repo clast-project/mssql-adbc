@@ -183,4 +183,76 @@ public sealed class RoutingTests
         }).ToArray();
         Assert.All(ids, id => Assert.NotEqual(Guid.Empty, id));
     }
+
+    /// <summary>A gateway that acknowledges the login and sends <paramref name="tokens"/> before DONE.</summary>
+    private static FakeTdsServer TokenGateway(params byte[][] tokens) =>
+        new((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.FedAuthAck(), .. tokens.SelectMany(t => t), .. FakeTdsServer.Done()]);
+
+    private static FakeTdsServer Target() =>
+        new((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.FedAuthAck(), .. FakeTdsServer.Done()]);
+
+    [Fact]
+    public void RequestsEnhancedRouting()
+    {
+        using FakeTdsServer server = Target();
+        using (new SqlServerDriver().Open(TokenOptions(server.Port)).Connect(null))
+        {
+        }
+        Assert.Contains((byte)0x0F, server.Logins.Single().Features);
+    }
+
+    /// <summary>An acknowledged enhanced route (ENVCHANGE 21) names the server and the database to log in to.</summary>
+    [Fact]
+    public void EnhancedRouteNamesTheDatabase()
+    {
+        using FakeTdsServer target = Target();
+        using FakeTdsServer gateway = TokenGateway(FakeTdsServer.EnhancedRoutingAck(), FakeTdsServer.EnhancedRouting("127.0.0.1", target.Port, "routed_db"));
+        Dictionary<string, string> options = TokenOptions(gateway.Port);
+        options[SqlServerParameters.Database] = "asked_db";
+        using AdbcConnection connection = new SqlServerDriver().Open(options).Connect(null);
+
+        Assert.Equal("asked_db", gateway.Logins.Single().Database);
+        FakeTdsServer.Login routed = target.Logins.Single();
+        Assert.Equal("routed_db", routed.Database);
+        Assert.Equal($"127.0.0.1,{target.Port}", routed.ServerName);
+        TdsSession session = ((SqlServerConnection)connection).Session;
+        Assert.Equal(target.Port, session.Settings.Port);
+        Assert.Equal("asked_db", session.ConnectSettings.Database);
+    }
+
+    /// <summary>The acknowledgement may follow the ENVCHANGE in the login response.</summary>
+    [Fact]
+    public void EnhancedRouteAcknowledgedAfterwardsIsFollowed()
+    {
+        using FakeTdsServer target = Target();
+        using FakeTdsServer gateway = TokenGateway(FakeTdsServer.EnhancedRouting("127.0.0.1", target.Port, "routed_db"), FakeTdsServer.EnhancedRoutingAck());
+        using AdbcConnection connection = new SqlServerDriver().Open(TokenOptions(gateway.Port)).Connect(null);
+        Assert.Equal("routed_db", target.Logins.Single().Database);
+    }
+
+    /// <summary>Without the acknowledgement, an enhanced route is ignored, as in SqlClient: the session stays where it logged in.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EnhancedRouteWithoutAcknowledgementIsIgnored(bool acknowledgedAsOff)
+    {
+        using FakeTdsServer target = Target();
+        byte[] route = FakeTdsServer.EnhancedRouting("127.0.0.1", target.Port, "routed_db");
+        using FakeTdsServer gateway = acknowledgedAsOff ? TokenGateway(FakeTdsServer.EnhancedRoutingAck(0), route) : TokenGateway(route);
+        using AdbcConnection connection = new SqlServerDriver().Open(TokenOptions(gateway.Port)).Connect(null);
+
+        Assert.Empty(target.Logins);
+        Assert.Equal(gateway.Port, ((SqlServerConnection)connection).Session.Settings.Port);
+    }
+
+    [Fact]
+    public void EnhancedRouteWithoutADatabaseIsRefused()
+    {
+        using FakeTdsServer target = Target();
+        using FakeTdsServer gateway = TokenGateway(FakeTdsServer.EnhancedRoutingAck(), FakeTdsServer.EnhancedRouting("127.0.0.1", target.Port, ""));
+        var ex = Assert.ThrowsAny<Exception>(() => new SqlServerDriver().Open(TokenOptions(gateway.Port)).Connect(null));
+        Assert.Contains("Invalid enhanced routing information", ex.ToString());
+        Assert.Empty(target.Logins);
+    }
 }
+

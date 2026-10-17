@@ -88,6 +88,8 @@ internal enum EnvChangeType : byte
     ResetConnectionAck = 18,
     UserInstanceName = 19,
     Routing = 20,
+    /// <summary>Routing to a server and a database, when the server acknowledged <see cref="FeatureId.EnhancedRoutingSupport"/>.</summary>
+    EnhancedRouting = 21,
 }
 
 /// <summary>PRELOGIN option tokens.</summary>
@@ -126,6 +128,7 @@ internal enum FeatureId : byte
     SqlDnsCaching = 0x0B,
     JsonSupport = 0x0D,
     VectorSupport = 0x0E,
+    EnhancedRoutingSupport = 0x0F,
     UserAgent = 0x10,
     Terminator = 0xFF,
 }

@@ -183,7 +183,8 @@ internal sealed class TdsSession : IDisposable
     /// Connects and logs in once. A server can answer the login with a routing
     /// ENVCHANGE (Azure SQL's redirect connection policy, read-only routing,
     /// failover groups): the session is then closed and the login repeated at
-    /// the host and port it names, within the original connect timeout.
+    /// the host and port it names, within the original connect timeout. An
+    /// enhanced route (ENVCHANGE 21) also names the database to log in to.
     /// </summary>
     private static TdsSession ConnectRouted(SqlServerConnectionSettings settings)
     {
@@ -192,7 +193,7 @@ internal sealed class TdsSession : IDisposable
         for (int routes = 0; ; routes++)
         {
             TdsSession session = ConnectOnce(target);
-            if (session.Route is not (string host, int port))
+            if (session.Route is not RouteInfo(string host, int port, var database))
             {
                 return session;
             }
@@ -207,7 +208,7 @@ internal sealed class TdsSession : IDisposable
             {
                 throw new AdbcException($"The connect timeout expired after the server routed the connection to {host},{port}", AdbcStatusCode.Timeout);
             }
-            target = settings.RoutedTo(host, port, remaining);
+            target = settings.RoutedTo(host, port, remaining, database);
         }
     }
 
@@ -219,7 +220,13 @@ internal sealed class TdsSession : IDisposable
     public SqlServerConnectionSettings ConnectSettings { get; private set; } = null!;
 
     /// <summary>Where the server routed this session's login, if it did.</summary>
-    public (string Host, int Port)? Route { get; private set; }
+    public RouteInfo? Route { get; private set; }
+
+    /// <summary>A routing ENVCHANGE: TCP to <paramref name="Host"/>,<paramref name="Port"/>, and for an enhanced route a <paramref name="Database"/>.</summary>
+    public sealed record RouteInfo(string Host, int Port, string? Database);
+
+    /// <summary>Whether the server acknowledged enhanced routing (feature extension 0x0F) at login.</summary>
+    public bool EnhancedRouting { get; private set; }
 
     private static TdsSession ConnectOnce(SqlServerConnectionSettings settings)
     {
@@ -709,6 +716,13 @@ internal sealed class TdsSession : IDisposable
                 continue;
             }
 
+            // An enhanced route from a server that did not acknowledge the feature is
+            // ignored, as SqlClient does: the session stays where it is.
+            if (Route is { Database: not null } && !EnhancedRouting)
+            {
+                Route = null;
+            }
+
             // A gateway that routes the connection elsewhere need not acknowledge the login itself.
             if (!loggedIn && Route == null)
             {
@@ -1148,7 +1162,23 @@ internal sealed class TdsSession : IDisposable
                 {
                     throw new TdsProtocolException($"Invalid routing information (protocol {protocol}, port {port}, server '{host}')");
                 }
-                Route = (host, port);
+                Route = new RouteInfo(host, port, null);
+                break;
+            }
+            case EnvChangeType.EnhancedRouting:
+            {
+                // New value: length, protocol (0 = TCP), port, server name, database name; the old value is empty.
+                int valueLength = Reader.ReadUInt16();
+                byte protocol = Reader.ReadByte();
+                int port = Reader.ReadUInt16();
+                string host = Reader.ReadUsVarChar();
+                string database = Reader.ReadUsVarChar();
+                remaining -= 2 + valueLength;
+                if (protocol != 0 || port == 0 || host.Length == 0 || database.Length == 0)
+                {
+                    throw new TdsProtocolException($"Invalid enhanced routing information (protocol {protocol}, port {port}, server '{host}', database '{database}')");
+                }
+                Route = new RouteInfo(host, port, database);
                 break;
             }
         }
@@ -1166,7 +1196,7 @@ internal sealed class TdsSession : IDisposable
                 return;
             }
             int length = Reader.ReadInt32();
-            if (feature is FeatureId.Utf8Support or FeatureId.JsonSupport or FeatureId.VectorSupport && length >= 1)
+            if (feature is FeatureId.Utf8Support or FeatureId.JsonSupport or FeatureId.VectorSupport or FeatureId.EnhancedRoutingSupport && length >= 1)
             {
                 byte value = Reader.ReadByte();
                 length -= 1;
@@ -1180,6 +1210,9 @@ internal sealed class TdsSession : IDisposable
                         break;
                     case FeatureId.VectorSupport:
                         VectorVersion = value;
+                        break;
+                    case FeatureId.EnhancedRoutingSupport:
+                        EnhancedRouting = value == 1;
                         break;
                 }
             }

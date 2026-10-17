@@ -192,12 +192,13 @@ internal static class Login7
         string database = settings.Database;
 
         // Feature extensions: UTF-8 support; native json and vector types (version 1 each,
-        // ignored by servers that do not know them); then the terminator.
+        // ignored by servers that do not know them); enhanced routing (no data); then the terminator.
         ReadOnlySpan<byte> standardFeatures =
         [
             (byte)FeatureId.Utf8Support, 0, 0, 0, 0,
             (byte)FeatureId.JsonSupport, 1, 0, 0, 0, 1,
             (byte)FeatureId.VectorSupport, 1, 0, 0, 0, 1,
+            (byte)FeatureId.EnhancedRoutingSupport, 0, 0, 0, 0,
         ];
         byte[] featureExt = [.. fedAuth, .. standardFeatures, (byte)FeatureId.Terminator];
 

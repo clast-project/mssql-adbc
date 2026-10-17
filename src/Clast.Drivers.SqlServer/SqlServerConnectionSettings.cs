@@ -374,17 +374,19 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>
     /// The settings for logging in again where a server routed the login: TCP
     /// to <paramref name="host"/> and <paramref name="port"/> (whose name TLS
-    /// then validates and the default SPN uses), with the same credentials,
-    /// database and options, and what is left of the connect timeout.
+    /// then validates and the default SPN uses), with the same credentials and
+    /// options, the same database unless an enhanced route names another
+    /// (<paramref name="database"/>), and what is left of the connect timeout.
     /// </summary>
     /// <remarks>
     /// A route can name <c>host\instance</c> (Fabric Warehouse does). As in
     /// SqlClient, the port given wins over the instance: the connection goes
     /// to the host, and LOGIN7 names the whole route.
     /// </remarks>
-    public SqlServerConnectionSettings RoutedTo(string host, int port, TimeSpan timeout)
+    public SqlServerConnectionSettings RoutedTo(string host, int port, TimeSpan timeout, string? database = null)
     {
         var routed = (SqlServerConnectionSettings)MemberwiseClone();
+        routed.Database = database ?? Database;
         int instance = host.IndexOf('\\');
         routed.Host = instance >= 0 ? host.Substring(0, instance) : host;
         routed.Port = port;
