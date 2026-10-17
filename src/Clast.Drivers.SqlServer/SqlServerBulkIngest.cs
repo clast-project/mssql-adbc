@@ -68,7 +68,7 @@ internal static class SqlServerBulkIngest
         }
 
         TdsColumn[] tableColumns = GetTableColumns(session, target);
-        ColumnEncoder[] encoders = MapColumns(schema, tableColumns);
+        ColumnEncoder[] encoders = MapColumns(schema, tableColumns, session.DefaultCollation);
         Dictionary<string, string> collations = encoders.Any(e => e.Target.Type is TdsDataType.BigVarChar or TdsDataType.BigChar)
             ? GetCollationNames(session, target)
             : new Dictionary<string, string>();
@@ -168,7 +168,7 @@ internal static class SqlServerBulkIngest
         return columns;
     }
 
-    private static ColumnEncoder[] MapColumns(Schema schema, TdsColumn[] tableColumns)
+    private static ColumnEncoder[] MapColumns(Schema schema, TdsColumn[] tableColumns, byte[] defaultCollation)
     {
         var encoders = new ColumnEncoder[schema.FieldsList.Count];
         for (int i = 0; i < encoders.Length; i++)
@@ -179,7 +179,7 @@ internal static class SqlServerBulkIngest
             {
                 throw new AdbcException($"The target table has no column '{field.Name}'", AdbcStatusCode.InvalidArgument);
             }
-            encoders[i] = EncoderFactory.Create(column.ToBulkTarget(), field, i);
+            encoders[i] = EncoderFactory.Create(column.ToBulkTarget(), field, i, defaultCollation);
         }
         return encoders;
     }
@@ -270,6 +270,9 @@ internal static class SqlServerBulkIngest
         DoubleType => "float",
         Decimal128Type d when d.Precision <= 38 => $"decimal({d.Precision},{d.Scale})",
         StringType => "nvarchar(max)",
+        JsonType => "json",
+        VariantType => "sql_variant",
+        FixedSizeListType { ValueDataType: FloatType } v => $"vector({v.ListSize})",
         BinaryType => "varbinary(max)",
         GuidType => "uniqueidentifier",
         FixedSizeBinaryType f when f.ByteWidth <= 8000 => $"binary({f.ByteWidth})",

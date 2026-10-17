@@ -52,7 +52,11 @@ internal static class SqlServerRpc
             DoubleType => TdsColumn.Create(name, TdsDataType.FloatN, 8),
             Decimal128Type d when d.Precision <= 38 =>
                 TdsColumn.Create(name, TdsDataType.DecimalN, DecimalLength(d.Precision), (byte)d.Precision, (byte)d.Scale),
-            StringType => TdsColumn.Create(name, TdsDataType.NVarChar, MaxBytes(column) <= 4000 ? 8000 : 0xFFFF, collation: collation),
+            // json parameters are sent as nvarchar; the server converts them where a json value is needed.
+            StringType or JsonType => TdsColumn.Create(name, TdsDataType.NVarChar, MaxBytes(column) <= 4000 ? 8000 : 0xFFFF, collation: collation),
+            VariantType => TdsColumn.Create(name, TdsDataType.Variant, 8016),
+            FixedSizeListType { ValueDataType: FloatType } v =>
+                TdsColumn.Create(name, TdsDataType.Vector, TdsColumn.VectorHeaderLength + v.ListSize * 4),
             BinaryType => TdsColumn.Create(name, TdsDataType.BigVarBinary, MaxBytes(column) <= 8000 ? 8000 : 0xFFFF),
             GuidType or FixedSizeBinaryType { ByteWidth: 16 } => TdsColumn.Create(name, TdsDataType.Guid, 16),
             Date32Type or Date64Type => TdsColumn.Create(name, TdsDataType.DateN, 3),
@@ -81,6 +85,10 @@ internal static class SqlServerRpc
     /// <summary>Longest value in a string or binary column, in UTF-8 or raw bytes (an upper bound on UTF-16 characters).</summary>
     private static int MaxBytes(IArrowArray? column)
     {
+        if (column is ExtensionArray extension)
+        {
+            column = extension.Storage;
+        }
         if (column is not BinaryArray binary)
         {
             return 0;
@@ -106,7 +114,7 @@ internal static class SqlServerRpc
                 Field field = batch.Schema.FieldsList[i];
                 string name = ParameterName(field, i);
                 TdsColumn type = ParameterType("@" + name, field, batch.Column(i), collation);
-                Encoders[i] = EncoderFactory.Create(type, field, i);
+                Encoders[i] = EncoderFactory.Create(type, field, i, collation);
                 Encoders[i].Bind(batch.Column(i));
                 if (i > 0)
                 {

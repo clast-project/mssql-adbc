@@ -132,8 +132,10 @@ internal sealed class TdsColumn
         Precision = precision,
         Scale = scale,
         Collation = collation ?? [],
-        LengthKind = maxLength == 0xFFFF ? TdsLengthKind.Plp
-            : type is TdsDataType.BigVarChar or TdsDataType.BigChar or TdsDataType.NVarChar or TdsDataType.NChar or TdsDataType.BigVarBinary or TdsDataType.BigBinary
+        LengthKind = type == TdsDataType.Variant ? TdsLengthKind.Variant
+            : maxLength == 0xFFFF ? TdsLengthKind.Plp
+            : type is TdsDataType.BigVarChar or TdsDataType.BigChar or TdsDataType.NVarChar or TdsDataType.NChar or TdsDataType.BigVarBinary
+                or TdsDataType.BigBinary or TdsDataType.Vector
                 ? TdsLengthKind.UShortLength
                 : TdsLengthKind.ByteLength,
     };
@@ -386,10 +388,13 @@ internal sealed class TdsColumn
         switch (Type)
         {
             case TdsDataType.Json:
-                // As SqlClient does: declared json, sent as varchar(max) holding UTF-8.
-                target.Type = TdsDataType.BigVarChar;
+                // Sent and declared as nvarchar(max); the server converts to json. SqlClient declares json
+                // and sends varchar(max) holding UTF-8, but SQL Server 2025 then misreads a NULL value that
+                // is followed by another column ("The stream ended unexpectedly"), and it rejects nvarchar
+                // data for a column declared json.
+                target.Type = TdsDataType.NVarChar;
                 target.Collation = new byte[5];
-                target._bulkTypeName = "json";
+                target._bulkTypeName = "nvarchar(max)";
                 break;
             case TdsDataType.Udt:
                 // Sent as the type's serialized bytes.

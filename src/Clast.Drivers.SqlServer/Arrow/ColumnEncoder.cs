@@ -47,9 +47,11 @@ internal abstract class ColumnEncoder
 
 internal static class EncoderFactory
 {
-    public static ColumnEncoder Create(TdsColumn target, Field source, int sourceIndex)
+    /// <param name="defaultCollation">The database's default collation, for values that carry their own (sql_variant strings).</param>
+    public static ColumnEncoder Create(TdsColumn target, Field source, int sourceIndex, byte[]? defaultCollation = null)
     {
         IArrowType type = source.DataType;
+        bool text = type is StringType or JsonType;
         ColumnEncoder? encoder = target.Type switch
         {
             TdsDataType.IntN when IsInteger(type) => new IntegerEncoder(target, sourceIndex),
@@ -57,8 +59,10 @@ internal static class EncoderFactory
             TdsDataType.FloatN when type is FloatType or DoubleType => new FloatEncoder(target, sourceIndex),
             TdsDataType.DecimalN or TdsDataType.NumericN when type is Decimal128Type d && d.Scale <= target.Scale =>
                 new DecimalEncoder(target, sourceIndex, d.Scale),
-            TdsDataType.NVarChar or TdsDataType.NChar when type is StringType => new StringEncoder(target, sourceIndex, null),
-            TdsDataType.BigVarChar or TdsDataType.BigChar when type is StringType => new StringEncoder(target, sourceIndex, target.Collation),
+            TdsDataType.NVarChar or TdsDataType.NChar when text => new StringEncoder(target, sourceIndex, null),
+            TdsDataType.BigVarChar or TdsDataType.BigChar when text => new StringEncoder(target, sourceIndex, target.Collation),
+            TdsDataType.Vector when IsFloatList(type, target.VectorDimensions) => new VectorEncoder(target, sourceIndex),
+            TdsDataType.Variant when type is VariantType => new VariantEncoder(target, sourceIndex, defaultCollation ?? []),
             TdsDataType.BigVarBinary or TdsDataType.BigBinary when type is BinaryType => new BinaryEncoder(target, sourceIndex),
             TdsDataType.Guid when type is GuidType || type is FixedSizeBinaryType { ByteWidth: 16 } => new GuidEncoder(target, sourceIndex),
             TdsDataType.DateN when type is Date32Type or Date64Type || type is TimestampType => new TemporalEncoder(target, sourceIndex, type),
@@ -74,6 +78,13 @@ internal static class EncoderFactory
             $"Cannot ingest Arrow type {Describe(type)} into column '{target.Name}' ({target.SqlTypeName})",
             AdbcStatusCode.NotImplemented);
     }
+
+    private static bool IsFloatList(IArrowType type, int dimensions) => type switch
+    {
+        FixedSizeListType f => f.ValueDataType is FloatType && f.ListSize == dimensions,
+        ListType l => l.ValueDataType is FloatType,
+        _ => false,
+    };
 
     private static bool IsInteger(IArrowType type) => type.TypeId is
         ArrowTypeId.Int8 or ArrowTypeId.Int16 or ArrowTypeId.Int32 or ArrowTypeId.Int64 or
@@ -262,6 +273,7 @@ internal sealed class StringEncoder : ColumnEncoder
     private char[] _chars = new char[256];
     private byte[] _bytes = new byte[256];
 
+    /// <param name="collation">The target's collation for varchar/char; null for nvarchar/nchar (UTF-16).</param>
     public StringEncoder(TdsColumn target, int sourceIndex, byte[]? collation) : base(target, sourceIndex)
     {
         _plp = target.LengthKind == TdsLengthKind.Plp;
@@ -277,7 +289,7 @@ internal sealed class StringEncoder : ColumnEncoder
         }
     }
 
-    public override void Bind(IArrowArray array) => _array = (StringArray)array;
+    public override void Bind(IArrowArray array) => _array = array is JsonArray json ? json.StorageArray : (StringArray)array;
 
     public override void Write(PacketWriter writer, int row)
     {

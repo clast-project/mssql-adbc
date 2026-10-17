@@ -53,7 +53,7 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 |---|---|---|
 | Connect | TCP, named pipes/LocalDB, TLS, SQL auth, integrated (SSPI) | Entra, failover, MARS, pooling |
 | ADBC | ExecuteQuery, ExecuteUpdate, BulkIngest, GetInfo, GetTableSchema, version 1.1 | GetObjects, transactions, prepare/bind, partitions, statistics (all since done; see below) |
-| Types | bit, tinyint–bigint, real/float, decimal/numeric, (n)varchar(n), varbinary(n), date, datetime2, datetimeoffset (`arrow.timestamp_with_offset`), uniqueidentifier (`arrow.uuid`) | `(max)`/PLP, datetime/smalldatetime/time, money, sql_variant (`arrow.parquet.variant`), xml, json, vector, hierarchyid |
+| Types | bit, tinyint–bigint, real/float, decimal/numeric, (n)varchar(n), varbinary(n), date, datetime2, datetimeoffset (`arrow.timestamp_with_offset`), uniqueidentifier (`arrow.uuid`) | `(max)`/PLP, datetime/smalldatetime/time, money, sql_variant (`arrow.parquet.variant`), xml, json, vector, hierarchyid (all since done; see Type mapping) |
 
 ## Milestones
 
@@ -76,6 +76,35 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 - ADBC C# referenced from a local checkout via `AdbcCSharpRoot` in
   `Directory.Build.props`; expected to become a submodule.
 - net10.0 only for now; netstandard2.0 later, without shaping today's design.
+
+## Type mapping
+
+| SQL Server | Arrow | Notes |
+|---|---|---|
+| tinyint, smallint, int, bigint | uint8, int16, int32, int64 | |
+| real, float | float, double | |
+| bit | bool | |
+| decimal(p,s), numeric(p,s) | decimal128(p,s) | |
+| money, smallmoney | decimal128(19,4), decimal128(10,4) | |
+| char, varchar, nchar, nvarchar (incl. max), text, ntext, xml | utf8 | varchar/text decoded from the column's code page; UTF-8 collations pass through |
+| json | `arrow.json` (utf8) | native transport (feature extension 0x0D): UTF-8 on the wire. Ingested as nvarchar(max), which the server converts |
+| binary, varbinary (incl. max), image, timestamp/rowversion | binary | |
+| hierarchyid, geometry, geography, other CLR types | binary | serialized bytes; type name in `MSSQL:type`. Ingested as varbinary. A friendlier form (hierarchyid as text, spatial as WKB) is still open |
+| vector(n) | fixed_size_list&lt;float32&gt;[n] | native transport (0x0E); float32 elements only. Ingest also accepts list&lt;float32&gt; of the right length |
+| date | date32 | |
+| time(s) | time64[ns] | |
+| datetime2(s), datetime, smalldatetime | timestamp[us] | |
+| datetimeoffset(s) | `arrow.timestamp_with_offset` (us) | |
+| uniqueidentifier | `arrow.uuid` | RFC 4122 byte order |
+| sql_variant | `arrow.parquet.variant` (unshredded) | per value: tinyint/smallint → int16, int → int32, bigint → int64, real/float → float/double, bit → boolean, decimal/numeric → decimal4/8/16 by precision, smallmoney/money → decimal8/16 (scale 4), date → date, time → time (us), datetime/smalldatetime/datetime2 → timestamp_ntz (us), datetimeoffset → timestamp (us, UTC; the offset is not kept), uniqueidentifier → uuid, character types → string, binary types → binary |
+
+Every field carries the SQL Server type in `MSSQL:type` metadata. Ingest
+into sql_variant takes variants and maps primitives back (int8/int16 →
+smallint, decimal4/8/16 → decimal(9/18/38), timestamps → datetime2(6) or
+datetimeoffset(6) at +00:00, string → nvarchar, binary → varbinary); objects
+and arrays are rejected. Bound parameters accept the same types (json as
+nvarchar). Create mode makes sql_variant, json and vector(n) columns from
+those Arrow types.
 
 ## ADBC 1.1 coverage
 
