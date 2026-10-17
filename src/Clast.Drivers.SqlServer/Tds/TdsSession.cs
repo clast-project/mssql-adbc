@@ -60,6 +60,9 @@ internal sealed class TdsSession : IDisposable
 
     public bool IsBroken => _broken;
 
+    /// <summary>The result stream currently reading from this session, if any.</summary>
+    public object? ActiveStream { get; set; }
+
     public void ClearMessages() => Messages.Clear();
 
     public static TdsSession Connect(SqlServerConnectionSettings settings)
@@ -403,6 +406,10 @@ internal sealed class TdsSession : IDisposable
         {
             throw new AdbcException("The connection is broken and must be closed", AdbcStatusCode.InvalidState);
         }
+        if (ActiveStream != null)
+        {
+            throw new AdbcException("A previous result stream is still open; read it to the end or dispose it first", AdbcStatusCode.InvalidState);
+        }
 
         Writer.BeginMessage(PacketType.SqlBatch);
         WriteAllHeaders();
@@ -411,41 +418,135 @@ internal sealed class TdsSession : IDisposable
     }
 
     /// <summary>
-    /// Executes a batch that returns no result sets and returns the total row
-    /// count reported by its statements, or -1 if none reported one.
+    /// Executes a batch and returns the total row count reported by its
+    /// statements, or -1 if none reported one. Any result sets are skipped.
     /// </summary>
     public long ExecuteNonQuery(string sql)
     {
         SendSqlBatch(sql);
         Reader.BeginMessage();
+        return DrainResponse();
+    }
 
-        long total = -1;
-        while (!Reader.IsMessageComplete)
+    /// <summary>
+    /// Reads the response up to the first result set and returns its columns,
+    /// or null if the response ends without one. On null, the response has
+    /// been fully read and any server errors thrown.
+    /// </summary>
+    public TdsColumn[]? ReadUntilResultSet()
+    {
+        try
         {
-            TokenType token = (TokenType)Reader.ReadByte();
-            switch (token)
+            while (!Reader.IsMessageComplete)
             {
-                case TokenType.Done:
-                case TokenType.DoneProc:
-                case TokenType.DoneInProc:
-                    ReadDone(out DoneStatus status, out ushort command, out long rowCount);
-                    if ((status & DoneStatus.Count) != 0 && command != SelectCommand)
-                    {
-                        total = Math.Max(total, 0) + rowCount;
-                    }
-                    break;
-                default:
-                    if (!TryReadCommonToken(token))
-                    {
-                        MarkBroken();
-                        throw new TdsProtocolException($"Unexpected token 0x{(byte)token:X2} in a non-query response");
-                    }
-                    break;
+                TokenType token = (TokenType)Reader.ReadByte();
+                switch (token)
+                {
+                    case TokenType.ColMetadata:
+                        TdsColumn[]? columns = TdsColumn.ReadMetadata(Reader);
+                        if (columns == null)
+                        {
+                            continue;
+                        }
+                        if (_errors.Count > 0)
+                        {
+                            // An earlier statement failed: report that rather than a later result.
+                            DrainResponse(columns);
+                            return null;
+                        }
+                        return columns;
+                    case TokenType.Done:
+                    case TokenType.DoneProc:
+                    case TokenType.DoneInProc:
+                        ReadDone(out _, out _, out _);
+                        break;
+                    default:
+                        ReadCommonTokenOrThrow(token);
+                        break;
+                }
             }
+        }
+        catch (TdsProtocolException)
+        {
+            MarkBroken();
+            throw;
+        }
+
+        ThrowIfErrors();
+        return null;
+    }
+
+    /// <summary>
+    /// Reads the rest of the current response, skipping any rows, and throws
+    /// any server errors it contained. <paramref name="columns"/> describes
+    /// the result set the reader is positioned in, if any.
+    /// </summary>
+    public long DrainResponse(TdsColumn[]? columns = null)
+    {
+        long total = -1;
+        byte[] nullBitmap = [];
+        try
+        {
+            while (!Reader.IsMessageComplete)
+            {
+                TokenType token = (TokenType)Reader.ReadByte();
+                switch (token)
+                {
+                    case TokenType.ColMetadata:
+                        columns = TdsColumn.ReadMetadata(Reader) ?? columns;
+                        break;
+                    case TokenType.Row:
+                        foreach (TdsColumn column in columns!)
+                        {
+                            column.SkipValue(Reader);
+                        }
+                        break;
+                    case TokenType.NbcRow:
+                        int bitmapLength = (columns!.Length + 7) >> 3;
+                        if (nullBitmap.Length < bitmapLength)
+                        {
+                            nullBitmap = new byte[bitmapLength];
+                        }
+                        Reader.ReadBytes(nullBitmap.AsSpan(0, bitmapLength));
+                        for (int i = 0; i < columns.Length; i++)
+                        {
+                            if ((nullBitmap[i >> 3] & (1 << (i & 7))) == 0)
+                            {
+                                columns[i].SkipValue(Reader);
+                            }
+                        }
+                        break;
+                    case TokenType.Done:
+                    case TokenType.DoneProc:
+                    case TokenType.DoneInProc:
+                        ReadDone(out DoneStatus status, out ushort command, out long rowCount);
+                        if ((status & DoneStatus.Count) != 0 && command != SelectCommand)
+                        {
+                            total = Math.Max(total, 0) + rowCount;
+                        }
+                        break;
+                    default:
+                        ReadCommonTokenOrThrow(token);
+                        break;
+                }
+            }
+        }
+        catch (TdsProtocolException)
+        {
+            MarkBroken();
+            throw;
         }
 
         ThrowIfErrors();
         return total;
+    }
+
+    private void ReadCommonTokenOrThrow(TokenType token)
+    {
+        if (!TryReadCommonToken(token))
+        {
+            throw new TdsProtocolException($"Unexpected token 0x{(byte)token:X2}");
+        }
     }
 
     /// <summary>Writes ALL_HEADERS with the transaction descriptor header.</summary>

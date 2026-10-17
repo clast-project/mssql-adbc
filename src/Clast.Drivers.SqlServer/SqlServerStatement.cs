@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
 using Apache.Arrow.Adbc;
+using Clast.Drivers.SqlServer.Tds;
 
 namespace Clast.Drivers.SqlServer;
 
@@ -19,8 +20,28 @@ public sealed class SqlServerStatement : AdbcStatement
 
     public override QueryResult ExecuteQuery()
     {
-        // TODO(M2): send SQL batch and stream rows into Arrow batches.
-        throw AdbcException.NotImplemented("ExecuteQuery is not yet supported");
+        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        TdsSession session = _connection.Session;
+        session.SendSqlBatch(sql);
+        session.Reader.BeginMessage();
+
+        TdsColumn[]? columns = session.ReadUntilResultSet();
+        if (columns == null)
+        {
+            return new QueryResult(-1, SqlServerQueryStream.Empty());
+        }
+
+        try
+        {
+            return new QueryResult(-1, new SqlServerQueryStream(session, columns));
+        }
+        catch
+        {
+            // Unsupported column type: leave the session usable.
+            session.ActiveStream = null;
+            session.DrainResponse(columns);
+            throw;
+        }
     }
 
     public override UpdateResult ExecuteUpdate()
