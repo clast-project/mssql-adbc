@@ -68,13 +68,22 @@ internal static class SqlServerStatistics
 
     private sealed record Statistic(string Table, string? Column, short Key, long? Exact, double? Approximate);
 
+    /// <remarks>
+    /// Synapse dedicated pools and Fabric Warehouse have no statistics
+    /// functions to read approximate values from; there approximate statistics
+    /// are none, rather than counted (which can be costly at their scale).
+    /// </remarks>
     public static IArrowArrayStream GetStatistics(TdsSession session, string? catalogPattern, string? schemaPattern, string? tablePattern, bool approximate)
     {
         var catalogs = new List<(string Name, SortedDictionary<string, List<Statistic>> Schemas)>();
+        if (approximate && !SqlServerEngine.HasStatisticsHistograms(SqlServerEngine.Edition(session)))
+        {
+            return Build(catalogs);
+        }
         if (catalogPattern != "")
         {
             List<object?[]> databases = SqlServerMetadata.Query(session,
-                $"SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1{Like("name", catalogPattern)} ORDER BY name")[0];
+                $"SELECT name FROM sys.databases WHERE {SqlServerMetadata.AccessibleDatabases(session)}{Like("name", catalogPattern)} ORDER BY name")[0];
             foreach (object?[] row in databases)
             {
                 string catalog = (string)row[0]!;
@@ -98,7 +107,9 @@ internal static class SqlServerStatistics
 
     /// <summary>Runs a query in the context of <paramref name="catalog"/>, as the statistics functions require.</summary>
     private static List<object?[]> QueryIn(TdsSession session, string catalog, string sql) =>
-        SqlServerMetadata.Query(session, $"EXEC {IngestTarget.Quote(catalog)}.sys.sp_executesql {SqlServerMetadata.Literal(sql)}")[0];
+        SqlServerMetadata.Query(session, string.Equals(catalog, session.Database, StringComparison.Ordinal)
+            ? sql
+            : $"EXEC {IngestTarget.Quote(catalog)}.sys.sp_executesql {SqlServerMetadata.Literal(sql)}")[0];
 
     private static SortedDictionary<string, List<Statistic>> ReadApproximate(TdsSession session, string catalog, string? schemaPattern, string? tablePattern)
     {
@@ -147,6 +158,7 @@ internal static class SqlServerStatistics
         List<object?[]> tables = QueryIn(session, catalog,
             $"SELECT s.name, o.name FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE {TableFilter(schemaPattern, tablePattern)} ORDER BY s.name, o.name");
 
+        string database = string.Equals(catalog, session.Database, StringComparison.Ordinal) ? "" : IngestTarget.Quote(catalog) + ".";
         const int TablesPerQuery = 100;
         for (int start = 0; start < tables.Count; start += TablesPerQuery)
         {
@@ -158,7 +170,7 @@ internal static class SqlServerStatistics
                 {
                     sql.Append("\nUNION ALL ");
                 }
-                sql.Append($"SELECT {SqlServerMetadata.Literal(schema)}, {SqlServerMetadata.Literal(name)}, COUNT_BIG(*) FROM {IngestTarget.Quote(catalog)}.{IngestTarget.Quote(schema)}.{IngestTarget.Quote(name)}");
+                sql.Append($"SELECT {SqlServerMetadata.Literal(schema)}, {SqlServerMetadata.Literal(name)}, COUNT_BIG(*) FROM {database}{IngestTarget.Quote(schema)}.{IngestTarget.Quote(name)}");
             }
             foreach (object?[] row in SqlServerMetadata.Query(session, sql.ToString())[0])
             {

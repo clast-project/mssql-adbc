@@ -213,7 +213,7 @@ public sealed class SqlServerConnection : AdbcConnection
 
     /// <summary>
     /// Adds the server's Entra authority and audience (asked for once, with a
-    /// probe handshake) to the standard connection options.
+    /// probe handshake) and its engine edition to the standard connection options.
     /// </summary>
     public override string GetOption(string key)
     {
@@ -221,6 +221,11 @@ public sealed class SqlServerConnection : AdbcConnection
         {
             EntraInfo info = _session.ConnectSettings.DiscoverEntra();
             return key == SqlServerParameters.EntraAuthority ? info.Authority : info.Audience;
+        }
+        if (key == SqlServerParameters.EngineEdition)
+        {
+            EnsureIdle();
+            return SqlServerParameters.Format((int)SqlServerEngine.Edition(_session));
         }
         return base.GetOption(key);
     }
@@ -315,12 +320,21 @@ public sealed class SqlServerConnection : AdbcConnection
         }
     }
 
-    /// <summary>The session's isolation level, as the server reports it.</summary>
+    /// <summary>
+    /// The session's isolation level, as the server reports it. Synapse
+    /// dedicated pools and Fabric Warehouse run every transaction at one level
+    /// (see <see cref="FixedIsolationLevel"/>); there only that level, or the
+    /// default, can be set.
+    /// </summary>
     public override IsolationLevel IsolationLevel
     {
         get
         {
             EnsureIdle();
+            if (FixedIsolationLevel() is IsolationLevel fixedLevel)
+            {
+                return fixedLevel;
+            }
             object? level = QueryScalar("SELECT CAST(transaction_isolation_level AS int) FROM sys.dm_exec_sessions WHERE session_id = @@SPID");
             return level switch
             {
@@ -343,10 +357,47 @@ public sealed class SqlServerConnection : AdbcConnection
                 _ => throw AdbcException.NotImplemented($"SQL Server does not support isolation level {value}"),
             };
             EnsureIdle();
+            if (FixedIsolationLevel() is IsolationLevel fixedLevel)
+            {
+                if (value != IsolationLevel.Default && value != fixedLevel)
+                {
+                    throw AdbcException.NotImplemented(
+                        $"{EngineName(SqlServerEngine.Edition(_session))} runs every transaction at isolation level {fixedLevel}; it cannot be changed");
+                }
+                return;
+            }
             _session.ExecuteNonQuery("SET TRANSACTION ISOLATION LEVEL " + level);
             _session.IsolationLevel = level == "READ COMMITTED" ? null : level;
         }
     }
+
+    /// <summary>
+    /// The one isolation level of an engine that does not let a session choose:
+    /// read uncommitted on a Synapse dedicated pool, or read committed (as
+    /// snapshot) where its database has READ_COMMITTED_SNAPSHOT on; snapshot on
+    /// Fabric Warehouse and Synapse serverless. Null elsewhere.
+    /// </summary>
+    private IsolationLevel? FixedIsolationLevel()
+    {
+        EngineEdition edition = SqlServerEngine.Edition(_session);
+        if (!SqlServerEngine.HasFixedIsolation(edition))
+        {
+            return null;
+        }
+        if (edition == EngineEdition.Warehouse)
+        {
+            return IsolationLevel.Snapshot;
+        }
+        object? snapshot = QueryScalar("SELECT CAST(is_read_committed_snapshot_on AS int) FROM sys.databases WHERE name = DB_NAME()");
+        return snapshot is 1 ? IsolationLevel.ReadCommitted : IsolationLevel.ReadUncommitted;
+    }
+
+    private static string EngineName(EngineEdition edition) => edition switch
+    {
+        EngineEdition.SynapseDedicated => "An Azure Synapse dedicated SQL pool",
+        EngineEdition.Warehouse => "A Fabric Warehouse or Synapse serverless SQL pool",
+        _ => "This server",
+    };
 
     public override string? CurrentCatalog
     {

@@ -17,9 +17,10 @@ namespace Clast.Drivers.SqlServer.Tests;
 
 /// <summary>
 /// A minimal TDS endpoint for behaviour the test server cannot show (Entra,
-/// routing): PRELOGIN (answering FEDAUTHREQUIRED = 1), TLS 1.2 inside
-/// PRELOGIN packets as SQL Server does, then one LOGIN7, answered with
-/// whatever tokens <c>respond</c> returns. It records each login.
+/// routing, other engines): PRELOGIN (answering FEDAUTHREQUIRED = 1), TLS 1.2
+/// inside PRELOGIN packets as SQL Server does, then one LOGIN7, answered with
+/// whatever tokens <c>respond</c> returns, then SQL batches, answered by
+/// <see cref="Batch"/>. It records each login and batch.
 /// </summary>
 internal sealed class FakeTdsServer : IDisposable
 {
@@ -52,6 +53,12 @@ internal sealed class FakeTdsServer : IDisposable
 
     public ConcurrentQueue<Login> Logins { get; } = new();
 
+    /// <summary>The tokens answering a SQL batch, given its text; by default DONE.</summary>
+    public Func<string, byte[]>? Batch { get; init; }
+
+    /// <summary>The text of each SQL batch received, after login.</summary>
+    public ConcurrentQueue<string> Batches { get; } = new();
+
     /// <summary>Exceptions on the server side, for diagnosing a failing test.</summary>
     public ConcurrentQueue<Exception> Errors { get; } = new();
 
@@ -69,6 +76,28 @@ internal sealed class FakeTdsServer : IDisposable
     public static byte[] FedAuthAck() => [0xAE, 0x02, 0, 0, 0, 0, 0xFF];
 
     public static byte[] Done() => [0xFD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    /// <summary>A result set of one nullable nvarchar column and no rows, then DONE.</summary>
+    public static byte[] EmptyResult() =>
+        [0x81, 1, 0, 0, 0, 0, 0, 0x01, 0x00, 0xE7, 0x40, 0x1F, 0x09, 0x04, 0xD0, 0x00, 0x34, 0, 0xFD, 0x10, 0, 0xC1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    /// <summary>A result set of one nullable int column and one row, then DONE.</summary>
+    public static byte[] IntResult(int? value)
+    {
+        var token = new List<byte> { 0x81, 1, 0, 0, 0, 0, 0, 0x01, 0x00, 0x26, 4, 0 };
+        token.AddRange([0xD1]);
+        if (value is int v)
+        {
+            token.Add(4);
+            token.AddRange(BitConverter.GetBytes(v));
+        }
+        else
+        {
+            token.Add(0);
+        }
+        token.AddRange([0xFD, 0x10, 0, 0xC1, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        return [.. token];
+    }
 
     /// <summary>A failed login: an ERROR token with <paramref name="number"/>, then DONE with the error bit.</summary>
     public static byte[] LoginError(int number, string message = "Login failed")
@@ -229,9 +258,31 @@ internal sealed class FakeTdsServer : IDisposable
         Logins.Enqueue(login);
 
         WritePacket(ssl, 0x04, _respond(login, index));
-        // Stay open until the client disconnects.
-        while (ssl.Read(new byte[64]) > 0)
+        // Answer batches until the client disconnects.
+        while (true)
         {
+            byte requestType;
+            byte[] request;
+            try
+            {
+                (requestType, request) = ReadMessage(ssl);
+            }
+            catch (Exception ex) when (ex is EndOfStreamException or IOException)
+            {
+                return;
+            }
+            if (requestType == 0x01)
+            {
+                // ALL_HEADERS (its total length first), then the text.
+                int headers = BinaryPrimitives.ReadInt32LittleEndian(request);
+                string sql = Encoding.Unicode.GetString(request, headers, request.Length - headers);
+                Batches.Enqueue(sql);
+                WritePacket(ssl, 0x04, Batch?.Invoke(sql) ?? Done());
+            }
+            else
+            {
+                WritePacket(ssl, 0x04, Done());
+            }
         }
     }
 

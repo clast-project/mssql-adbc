@@ -91,6 +91,9 @@ internal sealed class TdsSession : IDisposable
     /// <summary>The isolation level this driver last set on the session (for example <c>SERIALIZABLE</c>), or null for the default.</summary>
     public string? IsolationLevel { get; set; }
 
+    /// <summary><c>SERVERPROPERTY('EngineEdition')</c>, once asked for (see <see cref="SqlServerEngine"/>).</summary>
+    public int? EngineEdition { get; set; }
+
     /// <summary>Descriptor of the open transaction, or 0 when in autocommit mode.</summary>
     public long TransactionDescriptor { get; private set; }
 

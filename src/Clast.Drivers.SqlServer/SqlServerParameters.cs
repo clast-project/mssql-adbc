@@ -96,6 +96,14 @@ public static class SqlServerParameters
     /// </summary>
     public const string EntraAudience = "adbc.mssql.entra.audience";
 
+    /// <summary>
+    /// Read-only, from GetOption on a connection: the server's
+    /// <c>SERVERPROPERTY('EngineEdition')</c>, such as 3 (SQL Server
+    /// Enterprise or Developer), 5 (Azure SQL Database), 6 (Synapse dedicated
+    /// SQL pool) or 11 (Synapse serverless SQL pool, Fabric Warehouse).
+    /// </summary>
+    public const string EngineEdition = "adbc.mssql.engine_edition";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 

@@ -198,7 +198,7 @@ internal static class SqlServerMetadata
         // An empty pattern matches only objects without a catalog, and every object here has one.
         if (catalogPattern != "")
         {
-            foreach (object?[] row in Query(session, $"SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1{Like("name", catalogPattern)} ORDER BY name")[0])
+            foreach (object?[] row in Query(session, $"SELECT name FROM sys.databases WHERE {AccessibleDatabases(session)}{Like("name", catalogPattern)} ORDER BY name")[0])
             {
                 catalogs.Add(new CatalogInfo((string)row[0]!));
             }
@@ -224,6 +224,21 @@ internal static class SqlServerMetadata
         return BuildObjects(catalogs, depth);
     }
 
+    /// <summary>
+    /// The <c>sys.databases</c> filter for the databases the catalog functions
+    /// read: those the user can open, or on a Synapse dedicated pool (which
+    /// cannot query another database) the current one.
+    /// </summary>
+    internal static string AccessibleDatabases(TdsSession session) =>
+        SqlServerEngine.SupportsCrossDatabase(SqlServerEngine.Edition(session)) ? "HAS_DBACCESS(name) = 1" : "name = DB_NAME()";
+
+    /// <summary>
+    /// <c>sys</c> for the current database, else <c>[db].sys</c>: a two-part
+    /// name where one will do, as engines without cross-database queries need.
+    /// </summary>
+    internal static string SystemSchema(TdsSession session, string catalog) =>
+        string.Equals(catalog, session.Database, StringComparison.Ordinal) ? "sys" : IngestTarget.Quote(catalog) + ".sys";
+
     /// <summary>The <c>sys.objects</c> type codes for the requested table types.</summary>
     private static string ObjectTypes(IReadOnlyList<string>? tableTypes)
     {
@@ -247,18 +262,18 @@ internal static class SqlServerMetadata
         TdsSession session, CatalogInfo catalog, AdbcConnection.GetObjectsDepth depth,
         string? schemaPattern, string? tablePattern, string types, string? columnPattern)
     {
-        string db = IngestTarget.Quote(catalog.Name);
+        string sys = SystemSchema(session, catalog.Name);
         string objectFilter = $"o.type IN ({types}){Like("s.name", schemaPattern)}{Like("o.name", tablePattern)}";
         bool tables = depth is AdbcConnection.GetObjectsDepth.Tables or AdbcConnection.GetObjectsDepth.All;
         bool columns = depth == AdbcConnection.GetObjectsDepth.All;
 
         var sql = new StringBuilder();
         // Fixed database roles own schemas of their own; those are not where objects live.
-        sql.Append($"SELECT s.name FROM {db}.sys.schemas s WHERE s.schema_id NOT BETWEEN 16384 AND 16399{Like("s.name", schemaPattern)} ORDER BY s.name;\n");
+        sql.Append($"SELECT s.name FROM {sys}.schemas s WHERE s.schema_id NOT BETWEEN 16384 AND 16399{Like("s.name", schemaPattern)} ORDER BY s.name;\n");
         if (tables)
         {
             sql.Append($"""
-                SELECT s.name, o.name, o.type FROM {db}.sys.objects o JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id
+                SELECT s.name, o.name, o.type FROM {sys}.objects o JOIN {sys}.schemas s ON s.schema_id = o.schema_id
                 WHERE {objectFilter} ORDER BY s.name, o.name;
 
                 """);
@@ -268,39 +283,39 @@ internal static class SqlServerMetadata
             sql.Append($"""
                 SELECT s.name, o.name, c.name, c.ordinal, t.name, COALESCE(bt.name, t.name), c.max_length, c.precision, c.scale,
                        c.is_nullable, d.definition, c.is_identity, c.is_computed
-                FROM (SELECT *, CAST(ROW_NUMBER() OVER (PARTITION BY object_id ORDER BY column_id) AS int) AS ordinal FROM {db}.sys.columns) c
-                JOIN {db}.sys.objects o ON o.object_id = c.object_id
-                JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id
-                JOIN {db}.sys.types t ON t.user_type_id = c.user_type_id
-                LEFT JOIN {db}.sys.types bt ON bt.user_type_id = t.system_type_id
-                LEFT JOIN {db}.sys.default_constraints d ON d.object_id = c.default_object_id
+                FROM (SELECT *, CAST(ROW_NUMBER() OVER (PARTITION BY object_id ORDER BY column_id) AS int) AS ordinal FROM {sys}.columns) c
+                JOIN {sys}.objects o ON o.object_id = c.object_id
+                JOIN {sys}.schemas s ON s.schema_id = o.schema_id
+                JOIN {sys}.types t ON t.user_type_id = c.user_type_id
+                LEFT JOIN {sys}.types bt ON bt.user_type_id = t.system_type_id
+                LEFT JOIN {sys}.default_constraints d ON d.object_id = c.default_object_id
                 WHERE {objectFilter}{Like("c.name", columnPattern)}
                 ORDER BY s.name, o.name, c.ordinal;
                 SELECT s.name, o.name, k.name, CASE k.type WHEN 'PK' THEN N'PRIMARY KEY' ELSE N'UNIQUE' END, c.name,
                        CAST(ic.key_ordinal AS int) AS ordinal, CAST(NULL AS sysname), CAST(NULL AS sysname), CAST(NULL AS sysname)
-                FROM {db}.sys.key_constraints k
-                JOIN {db}.sys.objects o ON o.object_id = k.parent_object_id
-                JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id
-                JOIN {db}.sys.index_columns ic ON ic.object_id = k.parent_object_id AND ic.index_id = k.unique_index_id AND ic.key_ordinal > 0
-                JOIN {db}.sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                FROM {sys}.key_constraints k
+                JOIN {sys}.objects o ON o.object_id = k.parent_object_id
+                JOIN {sys}.schemas s ON s.schema_id = o.schema_id
+                JOIN {sys}.index_columns ic ON ic.object_id = k.parent_object_id AND ic.index_id = k.unique_index_id AND ic.key_ordinal > 0
+                JOIN {sys}.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                 WHERE {objectFilter}
                 UNION ALL
                 SELECT s.name, o.name, f.name, N'FOREIGN KEY', c.name, CAST(fc.constraint_column_id AS int), rs.name, ro.name, rc.name
-                FROM {db}.sys.foreign_keys f
-                JOIN {db}.sys.objects o ON o.object_id = f.parent_object_id
-                JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id
-                JOIN {db}.sys.foreign_key_columns fc ON fc.constraint_object_id = f.object_id
-                JOIN {db}.sys.columns c ON c.object_id = fc.parent_object_id AND c.column_id = fc.parent_column_id
-                JOIN {db}.sys.objects ro ON ro.object_id = fc.referenced_object_id
-                JOIN {db}.sys.schemas rs ON rs.schema_id = ro.schema_id
-                JOIN {db}.sys.columns rc ON rc.object_id = fc.referenced_object_id AND rc.column_id = fc.referenced_column_id
+                FROM {sys}.foreign_keys f
+                JOIN {sys}.objects o ON o.object_id = f.parent_object_id
+                JOIN {sys}.schemas s ON s.schema_id = o.schema_id
+                JOIN {sys}.foreign_key_columns fc ON fc.constraint_object_id = f.object_id
+                JOIN {sys}.columns c ON c.object_id = fc.parent_object_id AND c.column_id = fc.parent_column_id
+                JOIN {sys}.objects ro ON ro.object_id = fc.referenced_object_id
+                JOIN {sys}.schemas rs ON rs.schema_id = ro.schema_id
+                JOIN {sys}.columns rc ON rc.object_id = fc.referenced_object_id AND rc.column_id = fc.referenced_column_id
                 WHERE {objectFilter}
                 UNION ALL
                 SELECT s.name, o.name, k.name, N'CHECK', c.name, 1, NULL, NULL, NULL
-                FROM {db}.sys.check_constraints k
-                JOIN {db}.sys.objects o ON o.object_id = k.parent_object_id
-                JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id
-                LEFT JOIN {db}.sys.columns c ON c.object_id = k.parent_object_id AND c.column_id = k.parent_column_id
+                FROM {sys}.check_constraints k
+                JOIN {sys}.objects o ON o.object_id = k.parent_object_id
+                JOIN {sys}.schemas s ON s.schema_id = o.schema_id
+                LEFT JOIN {sys}.columns c ON c.object_id = k.parent_object_id AND c.column_id = k.parent_column_id
                 WHERE {objectFilter}
                 ORDER BY 1, 2, 3, 6;
 

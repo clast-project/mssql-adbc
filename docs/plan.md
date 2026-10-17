@@ -128,6 +128,37 @@ and there 4060 ("cannot open database") is nearly always a wrong name that a
 retry would only report 10 seconds later. SqlClient also raises an explicit
 count of 1 for Azure hosts; here an explicit count is used as given.
 
+## Synapse and Fabric
+
+The analytics engines speak TDS but accept a subset of T-SQL. The driver
+asks a session for `SERVERPROPERTY('EngineEdition')` once, when something
+depends on it, and exposes it as `adbc.mssql.engine_edition` (connection
+GetOption). Edition 6 is a Synapse dedicated SQL pool; 11 is a Synapse
+serverless SQL pool or a Fabric Warehouse / SQL analytics endpoint (which
+the edition does not tell apart); 12, SQL database in Fabric, is Azure SQL
+and needs nothing different.
+
+| | Synapse dedicated (6) | Fabric Warehouse, Synapse serverless (11) |
+|---|---|---|
+| Isolation level | Fixed: read uncommitted, or read committed (snapshot) with READ_COMMITTED_SNAPSHOT on. Reported from `sys.databases`; setting another level fails with NotImplemented, and no SET is sent (the server rejects it, error 104409) | Fixed: snapshot (the server ignores SET, and Fabric documents it as unsupported). Same handling |
+| GetObjects, GetStatistics | Only the current database: no cross-database queries | All databases, as elsewhere |
+| Approximate statistics | None: no `sys.dm_db_stats_histogram` | None, likewise |
+| Ingest, created tables | `WITH (HEAP)` when a column is (max), which columnstore (the default) cannot hold; json as nvarchar(max) | Delta Parquet types: strings and json as varchar(max) in the warehouse's UTF-8 collation, tinyint as smallint, fixed binary as varbinary(n), datetime2/time at most 6 digits, time-zone-aware timestamps as UTC datetime2; datetimeoffset, sql_variant and vector fail |
+
+Everywhere, the current database's catalog views are named with two-part
+names (`sys.objects`, not `[db].sys.objects`), and ingest's replace mode
+uses `IF OBJECT_ID(...) IS NOT NULL DROP TABLE` (Synapse has no
+`DROP TABLE IF EXISTS`).
+
+Not verified against the services, which the tests play with a fake TDS
+server, from Microsoft's documentation. Fabric's bulk load (`INSERT BULK`)
+is in preview and needs Entra authentication. Untested there:
+`sp_tablecollations_100` (undocumented; SqlClient's bulk copy relies on it
+on every engine), `GetParameterSchema` on a dedicated pool (needs
+database compatibility level 20 or higher), and DDL inside a transaction
+on a dedicated pool (unsupported, so creating a table with autocommit off
+fails there).
+
 ## Encryption
 
 | `adbc.mssql.encrypt` | Protocol | TLS |

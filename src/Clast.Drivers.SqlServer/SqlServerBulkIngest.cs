@@ -54,17 +54,16 @@ internal static class SqlServerBulkIngest
     {
         Schema schema = data.Schema;
 
-        switch (mode)
+        if (mode != BulkIngestMode.Append)
         {
-            case BulkIngestMode.Create:
-                session.ExecuteNonQuery(CreateTableSql(target, schema));
-                break;
-            case BulkIngestMode.Replace:
-                session.ExecuteNonQuery($"DROP TABLE IF EXISTS {target.QuotedName}; {CreateTableSql(target, schema)}");
-                break;
-            case BulkIngestMode.CreateAppend:
-                session.ExecuteNonQuery($"IF OBJECT_ID({Literal(target.ObjectIdName)}) IS NULL {CreateTableSql(target, schema)}");
-                break;
+            string create = CreateTableSql(target, schema, SqlServerEngine.Edition(session));
+            session.ExecuteNonQuery(mode switch
+            {
+                // Not DROP TABLE IF EXISTS, which Synapse dedicated pools lack.
+                BulkIngestMode.Replace => $"IF OBJECT_ID({Literal(target.ObjectIdName)}) IS NOT NULL DROP TABLE {target.QuotedName}; {create}",
+                BulkIngestMode.CreateAppend => $"IF OBJECT_ID({Literal(target.ObjectIdName)}) IS NULL {create}",
+                _ => create,
+            });
         }
 
         TdsColumn[] tableColumns = GetTableColumns(session, target);
@@ -242,9 +241,15 @@ internal static class SqlServerBulkIngest
         return sql.ToString();
     }
 
-    private static string CreateTableSql(IngestTarget target, Schema schema)
+    /// <summary>
+    /// The CREATE TABLE statement for the Arrow schema. On a Synapse dedicated
+    /// pool a table with a (max) column is a heap: the default, a clustered
+    /// columnstore index, cannot hold one.
+    /// </summary>
+    internal static string CreateTableSql(IngestTarget target, Schema schema, EngineEdition edition)
     {
         var sql = new StringBuilder("CREATE TABLE ").Append(target.QuotedName).Append(" (");
+        bool max = false;
         for (int i = 0; i < schema.FieldsList.Count; i++)
         {
             Field field = schema.FieldsList[i];
@@ -252,12 +257,50 @@ internal static class SqlServerBulkIngest
             {
                 sql.Append(", ");
             }
-            sql.Append(IngestTarget.Quote(field.Name)).Append(' ').Append(SqlType(field)).Append(field.IsNullable ? " NULL" : " NOT NULL");
+            string type = SqlType(field, edition);
+            max |= type.EndsWith("(max)", StringComparison.Ordinal);
+            sql.Append(IngestTarget.Quote(field.Name)).Append(' ').Append(type).Append(field.IsNullable ? " NULL" : " NOT NULL");
         }
-        return sql.Append(')').ToString();
+        sql.Append(')');
+        if (max && edition == EngineEdition.SynapseDedicated)
+        {
+            sql.Append(" WITH (HEAP)");
+        }
+        return sql.ToString();
     }
 
-    /// <summary>SQL Server column type for an Arrow field, used when the driver creates the table.</summary>
+    /// <summary>
+    /// The column type for an Arrow field, used when the driver creates the
+    /// table: SQL Server's, or on Fabric Warehouse (whose tables are Delta
+    /// Parquet) the nearest it stores. There strings are varchar in the
+    /// warehouse's UTF-8 collation, tinyint widens to smallint, fractional
+    /// seconds stop at 6 digits, and time-zone-aware timestamps are stored as
+    /// UTC datetime2. Synapse dedicated pools have no json type.
+    /// </summary>
+    internal static string SqlType(Field field, EngineEdition edition) => edition switch
+    {
+        EngineEdition.Warehouse => WarehouseType(field),
+        EngineEdition.SynapseDedicated when field.DataType is JsonType => "nvarchar(max)",
+        _ => SqlType(field),
+    };
+
+    private static string WarehouseType(Field field) => field.DataType switch
+    {
+        UInt8Type => "smallint",
+        StringType or JsonType => "varchar(max)",
+        FixedSizeBinaryType f when f.ByteWidth <= 8000 && field.DataType is not GuidType => $"varbinary({f.ByteWidth})",
+        TimestampType t => $"datetime2({Math.Min(Scale(t.Unit), 6)})",
+        Time32Type t => $"time({Math.Min(Scale(t.Unit), 6)})",
+        Time64Type t => $"time({Math.Min(Scale(t.Unit), 6)})",
+        TimestampWithOffsetType or VariantType or FixedSizeListType => throw new AdbcException(
+            $"Cannot create a column for field '{field.Name}' of Arrow type {Describe(field.DataType)}: Fabric Warehouse has no such column type",
+            AdbcStatusCode.NotImplemented),
+        _ => SqlType(field),
+    };
+
+    private static string Describe(IArrowType type) => type is ExtensionType e ? e.Name : type.Name;
+
+    /// <summary>SQL Server column type for an Arrow field.</summary>
     private static string SqlType(Field field) => field.DataType switch
     {
         BooleanType => "bit",
@@ -283,7 +326,7 @@ internal static class SqlServerBulkIngest
         Time32Type t => $"time({Scale(t.Unit)})",
         Time64Type t => $"time({Scale(t.Unit)})",
         _ => throw new AdbcException(
-            $"Cannot create a column for field '{field.Name}' of Arrow type {(field.DataType is ExtensionType e ? e.Name : field.DataType.Name)}",
+            $"Cannot create a column for field '{field.Name}' of Arrow type {Describe(field.DataType)}",
             AdbcStatusCode.NotImplemented),
     };
 
