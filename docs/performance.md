@@ -158,11 +158,12 @@ against this server.
 
 ## Other findings
 
-- Integrated authentication fails when the server is given as an IP
-  address. Clast fails for `127.0.0.1`, where SqlClient succeeds, and both
-  fail for the machine's LAN address ("target principal name is
-  incorrect"). The Kerberos SPN is built from a reverse lookup; the loopback
-  case needs to fall back like SqlClient's native SNI does.
+- Integrated authentication failed when the server was given as the
+  machine's LAN address (an earlier note blamed `127.0.0.1`, which works).
+  That address resolves to `host.localdomain`, and without a domain NTLM's
+  loopback check rejects that SPN. SqlClient and the ODBC driver fail the
+  same way. Fixed: for a local server the driver now retries with the machine
+  name, and `adbc.mssql.server_spn` sets the SPN explicitly.
 - After login, reads still go through the `PreLoginTlsStream` wrapper, and
   `SslStream` copies decrypted data into our buffer: about 3% of thread
   time. This is unavoidable with `SslStream` and not worth pursuing while

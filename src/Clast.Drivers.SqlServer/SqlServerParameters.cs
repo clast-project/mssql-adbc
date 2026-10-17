@@ -56,6 +56,13 @@ public static class SqlServerParameters
     /// </summary>
     public const string ParallelReads = "adbc.mssql.parallel_reads";
 
+    /// <summary>
+    /// Service principal name for integrated authentication, such as
+    /// <c>MSSQLSvc/host.example.com:1433</c>. Defaults to one built from the
+    /// server's DNS name.
+    /// </summary>
+    public const string ServerSpn = "adbc.mssql.server_spn";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 

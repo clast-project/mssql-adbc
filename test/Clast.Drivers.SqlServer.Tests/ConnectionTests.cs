@@ -40,6 +40,53 @@ public class ConnectionTests
         Assert.True(((SqlServerConnection)connection).Session.ServerVersion.Major >= 11);
     }
 
+    [SkippableTheory]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    [InlineData("[::1]")]
+    [InlineData("tcp:127.0.0.1,1433")]
+    public void ConnectsByAddress(string server)
+    {
+        using AdbcConnection connection = Connect(o => o[SqlServerParameters.Server] = server);
+        Assert.True(((SqlServerConnection)connection).Session.ServerVersion.Major >= 11);
+    }
+
+    /// <summary>
+    /// The machine's own names and LAN addresses. Without a domain, an
+    /// address that resolves to another name (host.localdomain) fails NTLM's
+    /// loopback check, so the driver retries with the machine name.
+    /// </summary>
+    [SkippableFact]
+    public void ConnectsByLocalNamesAndAddresses()
+    {
+        string machine = System.Net.Dns.GetHostName();
+        var servers = new List<string> { machine };
+        foreach (var address in System.Net.Dns.GetHostAddresses(machine).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork))
+        {
+            servers.Add(address.ToString());
+            servers.Add(System.Net.Dns.GetHostEntry(address).HostName);
+        }
+        foreach (string server in servers.Distinct())
+        {
+            using AdbcConnection connection = Connect(o => o[SqlServerParameters.Server] = server);
+            Assert.True(((SqlServerConnection)connection).Session.ServerVersion.Major >= 11, server);
+        }
+    }
+
+    [SkippableFact]
+    public void ExplicitServerSpnIsUsedAsGiven()
+    {
+        string lan = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
+            .First(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork).ToString();
+        var ex = Assert.Throws<AdbcException>(() => Connect(o =>
+        {
+            o[SqlServerParameters.Server] = lan;
+            o[SqlServerParameters.ServerSpn] = "MSSQLSvc/no-such-host.localdomain:1433";
+        }));
+        Assert.Equal(AdbcStatusCode.Unauthenticated, ex.Status);
+        Assert.Contains("MSSQLSvc/no-such-host.localdomain:1433", ex.Message);
+    }
+
     [SkippableFact]
     public void NegotiatesPacketSize()
     {

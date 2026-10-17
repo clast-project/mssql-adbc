@@ -21,6 +21,9 @@ internal sealed class TdsSession : IDisposable
     private Stream _transport = Stream.Null;
     private SslStream? _ssl;
     private NegotiateAuthentication? _sspi;
+    private readonly string? _spnOverride;
+    private string? _spn;
+    private bool _sspiFailed;
     private bool _broken;
 
     // Request state. Cancel can be called on any thread, so changes to the
@@ -42,9 +45,10 @@ internal sealed class TdsSession : IDisposable
     private static readonly byte[] s_attentionPacket =
         [(byte)PacketType.Attention, (byte)PacketStatus.EndOfMessage, 0, TdsConstants.HeaderLength, 0, 0, 1, 0];
 
-    private TdsSession(SqlServerConnectionSettings settings)
+    private TdsSession(SqlServerConnectionSettings settings, string? spn = null)
     {
         _settings = settings;
+        _spnOverride = spn ?? settings.ServerSpn;
         Reader = new PacketReader(Stream.Null, TdsConstants.InitialPacketSize);
         Writer = new PacketWriter(Stream.Null, TdsConstants.InitialPacketSize);
     }
@@ -98,20 +102,63 @@ internal sealed class TdsSession : IDisposable
 
     public static TdsSession Connect(SqlServerConnectionSettings settings)
     {
-        var session = new TdsSession(settings);
+        string? spn = null;
+        while (true)
+        {
+            var session = new TdsSession(settings, spn);
+            try
+            {
+                session.Open();
+                return session;
+            }
+            catch (Exception ex)
+            {
+                session.Dispose();
+                if (spn == null && session.LocalFallbackSpn() is string fallback)
+                {
+                    spn = fallback;
+                    continue;
+                }
+                if (ex is AdbcException)
+                {
+                    throw;
+                }
+                throw new AdbcException($"Could not connect to '{settings.Host}': {ex.Message}", AdbcStatusCode.IOError, ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The SPN to retry an integrated login with after the SSPI exchange
+    /// failed: the machine's own name, when the server is on this machine
+    /// under another name. Without a domain, Negotiate falls back to NTLM,
+    /// and NTLM rejects a local login whose target is not the machine name
+    /// (for example its LAN address, which resolves to <c>host.localdomain</c>).
+    /// Microsoft's own drivers fail in that case ("Cannot generate SSPI context").
+    /// </summary>
+    private string? LocalFallbackSpn()
+    {
+        if (!_sspiFailed || _settings.ServerSpn != null || !IsLocalHost(_settings.Host))
+        {
+            return null;
+        }
+        string spn = FormatSpn(Environment.MachineName);
+        return string.Equals(spn, _spn, StringComparison.OrdinalIgnoreCase) ? null : spn;
+    }
+
+    private static bool IsLocalHost(string host)
+    {
         try
         {
-            session.Open();
-            return session;
+            var local = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+                .Select(u => u.Address)
+                .ToHashSet();
+            return Dns.GetHostAddresses(host).Any(a => IPAddress.IsLoopback(a) || local.Contains(a));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is SocketException or System.Net.NetworkInformation.NetworkInformationException)
         {
-            session.Dispose();
-            if (ex is AdbcException)
-            {
-                throw;
-            }
-            throw new AdbcException($"Could not connect to '{settings.Host}': {ex.Message}", AdbcStatusCode.IOError, ex);
+            return false;
         }
     }
 
@@ -257,8 +304,13 @@ internal sealed class TdsSession : IDisposable
         return options;
     }
 
+    /// <summary><c>MSSQLSvc/fqdn:port</c> (<c>MSSQLSvc/fqdn</c> over a named pipe), as SQL Server registers it.</summary>
     private string GetServicePrincipalName()
     {
+        if (_spnOverride != null)
+        {
+            return _spn = _spnOverride;
+        }
         string host = _settings.Host;
         try
         {
@@ -268,15 +320,20 @@ internal sealed class TdsSession : IDisposable
         {
             // Fall back to the name as given.
         }
-        return _settings.PipeName != null ? $"MSSQLSvc/{host}" : $"MSSQLSvc/{host}:{_settings.Port}";
+        return _spn = FormatSpn(host);
     }
+
+    private string FormatSpn(string host) => _settings.PipeName != null ? $"MSSQLSvc/{host}" : $"MSSQLSvc/{host}:{_settings.Port}";
 
     private byte[] NextSspiToken(ReadOnlySpan<byte> incoming)
     {
         byte[]? outgoing = _sspi!.GetOutgoingBlob(incoming, out NegotiateAuthenticationStatusCode status);
         if (status != NegotiateAuthenticationStatusCode.Completed && status != NegotiateAuthenticationStatusCode.ContinueNeeded)
         {
-            throw new AdbcException($"Integrated authentication failed: {status}", AdbcStatusCode.Unauthenticated);
+            _sspiFailed = true;
+            throw new AdbcException(
+                $"Integrated authentication failed ({status}) for service principal name '{_spn}'. If the server is registered under another name, set {SqlServerParameters.ServerSpn}",
+                AdbcStatusCode.Unauthenticated);
         }
         return outgoing ?? [];
     }

@@ -41,6 +41,7 @@ internal sealed class SqlServerConnectionSettings
     public TimeSpan ConnectTimeout { get; private set; } = TimeSpan.FromSeconds(15);
     public int BatchRows { get; private set; } = 65536;
     public int ParallelReads { get; private set; } = 1;
+    public string? ServerSpn { get; private set; }
 
     public static SqlServerConnectionSettings Parse(IReadOnlyDictionary<string, string> options)
     {
@@ -107,6 +108,10 @@ internal sealed class SqlServerConnectionSettings
             settings.BatchRows = rows;
         }
 
+        if (options.TryGetValue(SqlServerParameters.ServerSpn, out string? spn) && spn.Length > 0)
+        {
+            settings.ServerSpn = spn;
+        }
         if (options.TryGetValue(SqlServerParameters.ParallelReads, out string? parallel))
         {
             settings.ParallelReads = ParseParallelReads(parallel);
