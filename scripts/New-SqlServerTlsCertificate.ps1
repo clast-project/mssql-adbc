@@ -114,35 +114,52 @@ if (-not $DnsName) {
 }
 Write-Host "Creating a certificate for: $($DnsName -join ', ')"
 
-if (-not $PSCmdlet.ShouldProcess('Cert:\LocalMachine\My', 'Create certificate')) {
+# Reuse a certificate an earlier (perhaps interrupted) run created, if it is still valid for a while.
+$certificate = Get-ChildItem Cert:\LocalMachine\My |
+    Where-Object { $_.FriendlyName -eq $friendlyName -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays(30) } |
+    Sort-Object NotAfter -Descending |
+    Select-Object -First 1
+if ($certificate) {
+    Write-Host "Reusing certificate $($certificate.Thumbprint) from an earlier run, valid until $($certificate.NotAfter)"
+}
+elseif (-not $PSCmdlet.ShouldProcess('Cert:\LocalMachine\My', 'Create certificate')) {
     return
 }
-$certificate = New-SelfSignedCertificate `
-    -Type SSLServerAuthentication `
-    -Subject "CN=$($DnsName[0])" `
-    -DnsName $DnsName `
-    -CertStoreLocation Cert:\LocalMachine\My `
-    -FriendlyName $friendlyName `
-    -KeyAlgorithm RSA -KeyLength 2048 `
-    -KeySpec KeyExchange `
-    -Provider 'Microsoft RSA SChannel Cryptographic Provider' `
-    -KeyExportPolicy NonExportable `
-    -NotAfter (Get-Date).AddYears($ValidYears)
-Write-Host "Created certificate $($certificate.Thumbprint), valid until $($certificate.NotAfter)"
+else {
+    $certificate = New-SelfSignedCertificate `
+        -Type SSLServerAuthentication `
+        -Subject "CN=$($DnsName[0])" `
+        -DnsName $DnsName `
+        -CertStoreLocation Cert:\LocalMachine\My `
+        -FriendlyName $friendlyName `
+        -KeyAlgorithm RSA -KeyLength 2048 `
+        -KeySpec KeyExchange `
+        -Provider 'Microsoft RSA SChannel Cryptographic Provider' `
+        -KeyExportPolicy NonExportable `
+        -NotAfter (Get-Date).AddYears($ValidYears)
+    Write-Host "Created certificate $($certificate.Thumbprint), valid until $($certificate.NotAfter)"
+}
 
-# Let the service account read the private key.
+# Let the service account read the private key. Windows PowerShell returns the key as
+# RSACryptoServiceProvider; PowerShell 7 as RSACng even for a key in a legacy (CAPI)
+# provider. Either way the unique name is the key file's name, in one of the machine
+# key folders: RSA\MachineKeys for CAPI keys, Keys for CNG keys.
 $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
-if ($rsa -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
-    $keyFile = Join-Path $env:ProgramData "Microsoft\Crypto\RSA\MachineKeys\$($rsa.CspKeyContainerInfo.UniqueKeyContainerName)"
+$keyName = if ($rsa -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+    $rsa.CspKeyContainerInfo.UniqueKeyContainerName
 }
 elseif ($rsa -is [System.Security.Cryptography.RSACng]) {
-    $keyFile = Join-Path $env:ProgramData "Microsoft\Crypto\Keys\$($rsa.Key.UniqueName)"
+    $rsa.Key.UniqueName
 }
 else {
     throw "Unexpected private key type $($rsa.GetType().FullName)."
 }
-if (-not (Test-Path $keyFile)) {
-    throw "Private key file not found at $keyFile."
+$keyFile = 'Microsoft\Crypto\RSA\MachineKeys', 'Microsoft\Crypto\Keys', 'Microsoft\Crypto\SystemKeys' |
+    ForEach-Object { Join-Path $env:ProgramData "$_\$keyName" } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+if (-not $keyFile) {
+    throw "Private key file '$keyName' not found under $env:ProgramData\Microsoft\Crypto."
 }
 & icacls.exe $keyFile /grant "${serviceAccount}:R" | Out-Null
 if ($LASTEXITCODE -ne 0) {
