@@ -88,12 +88,13 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 | `host\MSSQLSERVER` | the default instance; no browser lookup |
 | `np:host`, `np:host\instance` | the standard pipe (`sql\query` or `MSSQL$instance\sql\query`) |
 | `np:\host\pipe\name` | an explicit pipe |
+| `(localdb)\name`, `(localdb)\.\shared` | LocalDB (Windows): started on demand through SqlUserInstance.dll, then reached over its pipe. LocalDB has no TLS, so encryption defaults to login-only unless set explicitly |
 
 The browser is asked at all of the host's addresses at once, again each
 second until the connect timeout, and the result is reused by the
 connection's helper sessions (parallel reads). A failed connection to a
-resolved port clears it, so a restarted instance is found again. LocalDB is
-not yet supported.
+resolved port (or LocalDB pipe) clears it, so a restarted instance is found
+again.
 
 ## Type mapping
 

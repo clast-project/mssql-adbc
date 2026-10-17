@@ -202,7 +202,9 @@ internal sealed class TdsSession : IDisposable
                 case PreLoginEncryption.NotSupported:
                     if (_settings.Encrypt == EncryptMode.Mandatory)
                     {
-                        throw new AdbcException("The server does not support encryption", AdbcStatusCode.IOError);
+                        throw new AdbcException(
+                            $"The server does not support encryption; to connect without it, set {SqlServerParameters.Encrypt}=optional",
+                            AdbcStatusCode.IOError);
                     }
                     break;
                 case PreLoginEncryption.Off:
@@ -261,9 +263,9 @@ internal sealed class TdsSession : IDisposable
         {
             return OpenResolvedTransport(cancellationToken);
         }
-        catch (Exception ex) when (_settings.InstanceName != null && ex is SocketException or IOException or TimeoutException or OperationCanceledException)
+        catch (Exception ex) when (_settings.ResolvesEndpoint && ex is SocketException or IOException or TimeoutException or OperationCanceledException)
         {
-            // The instance may have restarted on another port: ask the browser again next time.
+            // The instance may have restarted on another port or pipe: resolve it again next time.
             _settings.InvalidateInstance();
             throw;
         }

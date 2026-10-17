@@ -32,6 +32,12 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>A named instance still to be resolved through the SQL Server Browser; null otherwise.</summary>
     public string? InstanceName { get; private set; }
 
+    /// <summary>A LocalDB instance (<c>(localdb)\name</c>) to start and connect to over its pipe; null otherwise.</summary>
+    public string? LocalDbInstance { get; private set; }
+
+    /// <summary>True when the endpoint is only known after asking the SQL Server Browser or LocalDB.</summary>
+    public bool ResolvesEndpoint => InstanceName != null || LocalDbInstance != null;
+
     /// <summary>The server string asked for TCP (<c>tcp:</c>), so a named instance must resolve to a TCP port.</summary>
     private bool _tcpOnly;
 
@@ -126,6 +132,14 @@ internal sealed class SqlServerConnectionSettings
             settings.ParallelReads = ParseParallelReads(parallel);
         }
 
+        // LocalDB has no TLS certificate and answers PRELOGIN with "encryption not
+        // supported"; its traffic stays on a local pipe to the user's own instance.
+        // Unless encryption was asked for explicitly, use login-only encryption there.
+        if (settings.LocalDbInstance != null && !options.ContainsKey(SqlServerParameters.Encrypt))
+        {
+            settings.Encrypt = EncryptMode.Optional;
+        }
+
         if (!settings.IntegratedSecurity && settings.Username == null)
         {
             throw new AdbcException(
@@ -189,6 +203,23 @@ internal sealed class SqlServerConnectionSettings
             explicitPort = true;
         }
 
+        if (value.StartsWith(@"(localdb)\", StringComparison.OrdinalIgnoreCase))
+        {
+            // (localdb)\name, or (localdb)\.\name for a shared instance.
+            string localDb = value.Substring(@"(localdb)\".Length).Trim();
+            if (localDb.Length == 0 || _tcpOnly || explicitPort)
+            {
+                throw InvalidOption(SqlServerParameters.Server, server);
+            }
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new AdbcException("LocalDB is only available on Windows", AdbcStatusCode.NotImplemented);
+            }
+            LocalDbInstance = localDb;
+            Host = "localhost";
+            return;
+        }
+
         int backslash = value.IndexOf('\\');
         if (backslash >= 0)
         {
@@ -198,10 +229,6 @@ internal sealed class SqlServerConnectionSettings
             if (instance.Length == 0 || instance.Contains('\\'))
             {
                 throw InvalidOption(SqlServerParameters.Server, server);
-            }
-            if (value.StartsWith("(localdb)", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new AdbcException("LocalDB is not yet supported", AdbcStatusCode.NotImplemented);
             }
             value = value.Substring(0, backslash).Trim();
             if (!explicitPort && !IsDefaultInstance(instance))
@@ -223,7 +250,7 @@ internal sealed class SqlServerConnectionSettings
     /// </summary>
     public void ResolveInstance()
     {
-        if (InstanceName == null)
+        if (!ResolvesEndpoint)
         {
             return;
         }
@@ -233,7 +260,13 @@ internal sealed class SqlServerConnectionSettings
             {
                 return;
             }
-            SqlBrowser.Instance instance = SqlBrowser.Resolve(Host, InstanceName, ConnectTimeout);
+            if (LocalDbInstance != null)
+            {
+                ResolveLocalDb();
+                _resolved = true;
+                return;
+            }
+            SqlBrowser.Instance instance = SqlBrowser.Resolve(Host, InstanceName!, ConnectTimeout);
             if (instance.TcpPort is int port)
             {
                 Port = port;
@@ -251,6 +284,24 @@ internal sealed class SqlServerConnectionSettings
             }
             _resolved = true;
         }
+    }
+
+    /// <summary>Starts the LocalDB instance and takes the pipe it reports (<c>np:\\.\pipe\LOCALDB#...\tsql\query</c>).</summary>
+    private void ResolveLocalDb()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new AdbcException("LocalDB is only available on Windows", AdbcStatusCode.NotImplemented);
+        }
+        string endpoint = LocalDb.StartInstance(LocalDbInstance!);
+        const string marker = @"\pipe\";
+        int pipe = endpoint.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (!endpoint.StartsWith(@"np:\\", StringComparison.OrdinalIgnoreCase) || pipe < 0)
+        {
+            throw new AdbcException($"LocalDB instance '{LocalDbInstance}' reported an unexpected endpoint '{endpoint}'", AdbcStatusCode.IOError);
+        }
+        Host = NormalizeHost(endpoint.Substring(5, pipe - 5));
+        PipeName = endpoint.Substring(pipe + marker.Length);
     }
 
     /// <summary>Forgets a resolved endpoint (after connecting to it failed), so the next connection asks the browser again.</summary>

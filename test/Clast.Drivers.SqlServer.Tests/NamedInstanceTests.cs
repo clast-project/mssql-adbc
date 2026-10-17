@@ -161,13 +161,6 @@ public sealed class NamedInstanceTests : IDisposable
         Assert.Equal(AdbcStatusCode.InvalidArgument, ex.Status);
     }
 
-    [Fact]
-    public void LocalDbIsNotYetSupported()
-    {
-        var ex = Assert.Throws<AdbcException>(() => SqlServerConnectionSettings.Parse(new Dictionary<string, string> { [SqlServerParameters.Server] = @"(localdb)\MSSQLLocalDB" }));
-        Assert.Equal(AdbcStatusCode.NotImplemented, ex.Status);
-    }
-
     /// <summary>Answers CLNT_UCAST_INST requests on 127.0.0.1 with whatever <see cref="Respond"/> returns (null: stay silent).</summary>
     private sealed class FakeBrowser : IDisposable
     {
