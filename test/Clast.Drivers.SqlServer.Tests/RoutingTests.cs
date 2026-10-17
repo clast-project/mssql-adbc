@@ -1,0 +1,126 @@
+// Copyright (c) clast-project. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
+
+using Apache.Arrow;
+using Apache.Arrow.Adbc;
+using Apache.Arrow.Ipc;
+using Clast.Drivers.SqlServer.Tds;
+using Xunit;
+
+namespace Clast.Drivers.SqlServer.Tests;
+
+/// <summary>
+/// Routing (ENVCHANGE 20), as Azure SQL's redirect connection policy,
+/// read-only routing and failover groups use it. Fake gateways route to the
+/// real test server, or to another fake.
+/// </summary>
+public sealed class RoutingTests
+{
+    /// <summary>A gateway that acknowledges the login and routes it to <paramref name="port"/> on this machine.</summary>
+    private static FakeTdsServer Gateway(int port, string host = "127.0.0.1") =>
+        new((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Routing(host, port), .. FakeTdsServer.Done()]);
+
+    private static Dictionary<string, string> Options(int port, Action<Dictionary<string, string>>? configure = null)
+    {
+        SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
+        var options = new Dictionary<string, string>(config.Options)
+        {
+            [SqlServerParameters.Server] = $"127.0.0.1,{port}",
+            [SqlServerParameters.TrustServerCertificate] = "true",
+        };
+        configure?.Invoke(options);
+        return options;
+    }
+
+    private static int Scalar(AdbcConnection connection, string sql)
+    {
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = sql;
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        using RecordBatch batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult()!;
+        return ((Int32Array)batch.Column(0)).GetValue(0)!.Value;
+    }
+
+    [SkippableFact]
+    public void FollowsTheRouteToTheRealServer()
+    {
+        using FakeTdsServer gateway = Gateway(1433);
+        using AdbcConnection connection = new SqlServerDriver().Open(Options(gateway.Port)).Connect(null);
+        TdsSession session = ((SqlServerConnection)connection).Session;
+
+        Assert.Equal(("127.0.0.1", 1433), (session.Settings.Host, session.Settings.Port));
+        Assert.Equal(gateway.Port, session.ConnectSettings.Port);
+        Assert.NotEqual("Fake SQL", session.ServerProgramName);
+        Assert.Equal(1, Scalar(connection, "SELECT 1"));
+        Assert.Single(gateway.Logins);
+    }
+
+    [SkippableFact]
+    public void RoutedLoginNamesTheRouteAndKeepsTheDatabase()
+    {
+        using var target = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Done()]);
+        using FakeTdsServer gateway = Gateway(target.Port, "localhost");
+        using AdbcConnection connection = new SqlServerDriver().Open(Options(gateway.Port, o => o[SqlServerParameters.Database] = "sales")).Connect(null);
+
+        FakeTdsServer.Login first = gateway.Logins.Single();
+        FakeTdsServer.Login routed = target.Logins.Single();
+        Assert.Equal("127.0.0.1", first.ServerName);
+        Assert.Equal($"localhost,{target.Port}", routed.ServerName);
+        Assert.Equal("sales", routed.Database);
+        Assert.True(routed.IntegratedSecurity);
+        Assert.Equal("localhost", ((SqlServerConnection)connection).Session.Settings.Host);
+    }
+
+    [SkippableFact]
+    public void FollowsChainedRoutes()
+    {
+        using FakeTdsServer second = Gateway(1433);
+        using FakeTdsServer first = Gateway(second.Port);
+        using AdbcConnection connection = new SqlServerDriver().Open(Options(first.Port)).Connect(null);
+        Assert.Equal(1, Scalar(connection, "SELECT 1"));
+        Assert.Single(first.Logins);
+        Assert.Single(second.Logins);
+    }
+
+    [SkippableFact]
+    public void StopsARoutingLoop()
+    {
+        FakeTdsServer? loop = null;
+        loop = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Routing("127.0.0.1", loop!.Port), .. FakeTdsServer.Done()]);
+        using (loop)
+        {
+            var ex = Assert.Throws<AdbcException>(() => new SqlServerDriver().Open(Options(loop.Port)).Connect(null));
+            Assert.Contains($"more than {TdsSession.MaxRoutes} times", ex.Message);
+            Assert.Equal(TdsSession.MaxRoutes + 1, loop.Logins.Count);
+        }
+    }
+
+    [SkippableFact]
+    public void ParallelReadSessionsAreRoutedToo()
+    {
+        using FakeTdsServer gateway = Gateway(1433);
+        using AdbcConnection connection = new SqlServerDriver().Open(Options(gateway.Port, o => o[SqlServerParameters.ParallelReads] = "3")).Connect(null);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "SELECT CAST(n AS bigint) AS k FROM (SELECT TOP (3000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b) AS t";
+        statement.SetOption(SqlServerParameters.PartitionColumn, "k");
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        Assert.IsType<SqlServerParallelQueryStream>(stream);
+        long rows = 0;
+        while (stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
+        {
+            rows += batch.Length;
+            batch.Dispose();
+        }
+        Assert.Equal(3000, rows);
+        // The connection's own session and two helpers, each logging in through the gateway.
+        Assert.Equal(3, gateway.Logins.Count);
+    }
+
+    [SkippableFact]
+    public void RejectsARouteThatIsNotTcp()
+    {
+        using var gateway = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Routing("127.0.0.1", 1433, protocol: 1), .. FakeTdsServer.Done()]);
+        var ex = Assert.ThrowsAny<Exception>(() => new SqlServerDriver().Open(Options(gateway.Port)).Connect(null));
+        Assert.Contains("Invalid routing information", ex.ToString());
+    }
+}

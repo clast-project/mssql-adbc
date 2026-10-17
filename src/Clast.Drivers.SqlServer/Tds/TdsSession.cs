@@ -129,7 +129,53 @@ internal sealed class TdsSession : IDisposable
         return session._entraInfo!;
     }
 
+    /// <summary>The most routing redirections followed for one connection, as in SqlClient.</summary>
+    public const int MaxRoutes = 10;
+
+    /// <summary>
+    /// Connects and logs in. A server can answer the login with a routing
+    /// ENVCHANGE (Azure SQL's redirect connection policy, read-only routing,
+    /// failover groups): the session is then closed and the login repeated at
+    /// the host and port it names, within the original connect timeout.
+    /// </summary>
     public static TdsSession Connect(SqlServerConnectionSettings settings)
+    {
+        DateTime deadline = DateTime.UtcNow + settings.ConnectTimeout;
+        SqlServerConnectionSettings target = settings;
+        for (int routes = 0; ; routes++)
+        {
+            TdsSession session = ConnectOnce(target);
+            if (session.Route is not (string host, int port))
+            {
+                session.ConnectSettings = settings;
+                return session;
+            }
+            session.Dispose();
+
+            if (routes == MaxRoutes)
+            {
+                throw new AdbcException($"The server routed the connection more than {MaxRoutes} times", AdbcStatusCode.IOError);
+            }
+            TimeSpan remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw new AdbcException($"The connect timeout expired after the server routed the connection to {host},{port}", AdbcStatusCode.Timeout);
+            }
+            target = settings.RoutedTo(host, port, remaining);
+        }
+    }
+
+    /// <summary>
+    /// The settings the connection was asked to use, before any routing; <see cref="Settings"/>
+    /// are those of the server actually reached. Other sessions for the same connection (parallel
+    /// reads) start from these, so they are routed as a separate connection would be.
+    /// </summary>
+    public SqlServerConnectionSettings ConnectSettings { get; private set; } = null!;
+
+    /// <summary>Where the server routed this session's login, if it did.</summary>
+    public (string Host, int Port)? Route { get; private set; }
+
+    private static TdsSession ConnectOnce(SqlServerConnectionSettings settings)
     {
         string? spn = null;
         while (true)
@@ -563,7 +609,8 @@ internal sealed class TdsSession : IDisposable
                 continue;
             }
 
-            if (!loggedIn)
+            // A gateway that routes the connection elsewhere need not acknowledge the login itself.
+            if (!loggedIn && Route == null)
             {
                 throw new AdbcException("The server did not acknowledge the login", AdbcStatusCode.Unauthenticated);
             }
@@ -990,7 +1037,20 @@ internal sealed class TdsSession : IDisposable
                 TransactionDescriptor = 0;
                 break;
             case EnvChangeType.Routing:
-                throw new AdbcException("Server redirection (routing) is not yet supported", AdbcStatusCode.NotImplemented);
+            {
+                // New value: length, protocol (0 = TCP), port, server name; the old value is empty.
+                int valueLength = Reader.ReadUInt16();
+                byte protocol = Reader.ReadByte();
+                int port = Reader.ReadUInt16();
+                string host = Reader.ReadUsVarChar();
+                remaining -= 2 + valueLength;
+                if (protocol != 0 || port == 0 || host.Length == 0)
+                {
+                    throw new TdsProtocolException($"Invalid routing information (protocol {protocol}, port {port}, server '{host}')");
+                }
+                Route = (host, port);
+                break;
+            }
         }
 
         Reader.Skip(remaining);

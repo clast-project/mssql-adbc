@@ -161,7 +161,7 @@ internal static class Login7
         string userName = credentials ? settings.Username ?? "" : "";
         string password = credentials ? settings.Password ?? "" : "";
         string appName = settings.ApplicationName;
-        string serverName = settings.Host;
+        string serverName = settings.LoginServerName;
         string clientInterface = "Clast.Drivers.SqlServer";
         string language = "";
         string database = settings.Database;

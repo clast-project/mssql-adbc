@@ -96,6 +96,18 @@ connection's helper sessions (parallel reads). A failed connection to a
 resolved port (or LocalDB pipe) clears it, so a restarted instance is found
 again.
 
+## Routing
+
+A server can answer a login with a routing ENVCHANGE (type 20): Azure SQL's
+redirect connection policy (the default inside Azure), read-only routing and
+failover groups use it. The driver closes that session and logs in again at
+the host and port named, with the same credentials, database and options,
+validating TLS against the new host name and sending `host,port` as the
+LOGIN7 server name, as SqlClient does. It follows up to 10 routes within the
+original connect timeout. Parallel-read helper sessions start from the
+original server and are routed in turn. Enhanced routing (feature 0x0F,
+which can also name a database) is not requested yet.
+
 ## Encryption
 
 | `adbc.mssql.encrypt` | Protocol | TLS |

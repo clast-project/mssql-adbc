@@ -105,7 +105,7 @@ public sealed class SqlServerConnection : AdbcConnection
             if (missing > 0)
             {
                 Task<TdsSession>[] opening = Enumerable.Range(0, missing)
-                    .Select(_ => Task.Run(() => TdsSession.Connect(_session.Settings)))
+                    .Select(_ => Task.Run(() => TdsSession.Connect(_session.ConnectSettings)))
                     .ToArray();
                 try
                 {
@@ -219,7 +219,7 @@ public sealed class SqlServerConnection : AdbcConnection
     {
         if (key is SqlServerParameters.EntraAuthority or SqlServerParameters.EntraAudience)
         {
-            EntraInfo info = _session.Settings.DiscoverEntra();
+            EntraInfo info = _session.ConnectSettings.DiscoverEntra();
             return key == SqlServerParameters.EntraAuthority ? info.Authority : info.Audience;
         }
         return base.GetOption(key);

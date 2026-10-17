@@ -58,6 +58,11 @@ internal sealed class SqlServerConnectionSettings
     public int ParallelReads { get; private set; } = 1;
     public string? ServerSpn { get; private set; }
 
+    /// <summary>The server name sent in LOGIN7; after routing, the routed <c>host,port</c>, as SqlClient sends it.</summary>
+    public string LoginServerName => _loginServerName ?? Host;
+
+    private string? _loginServerName;
+
     /// <summary>A Microsoft Entra access token to log in with, instead of other credentials.</summary>
     public string? AccessToken { get; private set; }
 
@@ -328,6 +333,26 @@ internal sealed class SqlServerConnectionSettings
         {
             return _entraInfo ??= TdsSession.DiscoverEntra(this);
         }
+    }
+
+    /// <summary>
+    /// The settings for logging in again where a server routed the login: TCP
+    /// to <paramref name="host"/> and <paramref name="port"/> (whose name TLS
+    /// then validates and the default SPN uses), with the same credentials,
+    /// database and options, and what is left of the connect timeout.
+    /// </summary>
+    public SqlServerConnectionSettings RoutedTo(string host, int port, TimeSpan timeout)
+    {
+        var routed = (SqlServerConnectionSettings)MemberwiseClone();
+        routed.Host = host;
+        routed.Port = port;
+        routed.PipeName = null;
+        routed.InstanceName = null;
+        routed.LocalDbInstance = null;
+        routed._loginServerName = $"{host},{port}";
+        routed.ConnectTimeout = timeout;
+        routed._entraInfo = null;
+        return routed;
     }
 
     /// <summary>Forgets a resolved endpoint (after connecting to it failed), so the next connection asks the browser again.</summary>
