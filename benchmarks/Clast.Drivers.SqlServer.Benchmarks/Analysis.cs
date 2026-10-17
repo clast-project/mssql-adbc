@@ -35,7 +35,17 @@ internal static class Analysis
     /// <param name="ServerCpu">The logical CPU the server ran the request on most often (-1 if never seen).</param>
     /// <param name="ClientCpu">The logical CPU the client thread was on when the run started.</param>
     private sealed record Sample(double WallMs, double ClientCpuMs, double ServerCpuMs, double ServerElapsedMs, long Packets, Dictionary<string, double> WaitMs,
-        int ServerCpu, int ClientCpu);
+        int ServerCpu, int ClientCpu, double ThreadMegacycles);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool QueryThreadCycleTime(IntPtr thread, out ulong cycles);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    /// <summary>CPU cycles the calling thread has used (Windows; 0 elsewhere); precise, unlike process CPU time.</summary>
+    private static ulong ThreadCycles() =>
+        OperatingSystem.IsWindows() && QueryThreadCycleTime(GetCurrentThread(), out ulong cycles) ? cycles : 0;
 
     /// <summary>On this machine (i9-12900K) CPUs 0-15 are P-core threads (siblings 2k, 2k+1) and 16-23 are E-cores.</summary>
     private static bool IsEfficiencyCore(int cpu) => cpu >= EfficiencyCoreStart;
@@ -145,9 +155,11 @@ internal static class Analysis
 
         int clientCpu = Thread.GetCurrentProcessorId();
         TimeSpan clientCpu0 = Process.GetCurrentProcess().TotalProcessorTime;
+        ulong cycles0 = ThreadCycles();
         var watch = Stopwatch.StartNew();
         c.Run();
         watch.Stop();
+        ulong cycles1 = ThreadCycles();
         stop.Cancel();
         sampler.Wait();
         TimeSpan clientCpu1 = Process.GetCurrentProcess().TotalProcessorTime;
@@ -167,7 +179,7 @@ internal static class Analysis
 
         return new Sample(watch.Elapsed.TotalMilliseconds, (clientCpu1 - clientCpu0).TotalMilliseconds,
             cpu1 - cpu0, elapsed1 - elapsed0, packets1 - packets0, waitDelta,
-            serverCpus.Count > 0 ? serverCpus.MaxBy(p => p.Value).Key : -1, clientCpu);
+            serverCpus.Count > 0 ? serverCpus.MaxBy(p => p.Value).Key : -1, clientCpu, (cycles1 - cycles0) / 1e6);
     }
 
     /// <summary>The session's CPU and elapsed time over its completed requests, in ms.</summary>
@@ -223,6 +235,20 @@ internal static class Analysis
                 $"{c.Name,-34} {Median(c.Samples.Select(s => s.WallMs)),8:F0} {c.Samples.Min(s => s.WallMs),8:F0} " +
                 $"{Median(c.Samples.Select(s => s.ClientCpuMs)),8:F0} {Median(c.Samples.Select(s => s.ServerCpuMs)),8:F0} " +
                 $"{Median(c.Samples.Select(s => s.ServerElapsedMs)),8:F0} {Median(c.Samples.Select(s => (double)s.Packets)),8:F0}  {string.Join(" ", waits)}");
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            Console.WriteLine();
+            Console.WriteLine("Reading thread CPU (QueryThreadCycleTime), millions of cycles");
+            Console.WriteLine($"{"case",-34} {"mean",8} {"median",8} {"min",8} {"stddev",8}");
+            foreach (Case c in cases)
+            {
+                double[] cycles = c.Samples.Select(x => x.ThreadMegacycles).ToArray();
+                double mean = cycles.Average();
+                double stddev = Math.Sqrt(cycles.Select(x => (x - mean) * (x - mean)).Average());
+                Console.WriteLine($"{c.Name,-34} {mean,8:F1} {Median(cycles),8:F1} {cycles.Min(),8:F1} {stddev,8:F1}");
+            }
         }
 
         Console.WriteLine();
