@@ -55,18 +55,17 @@ public class ReadBenchmarks
         switch (Driver)
         {
             case "SqlClient":
-                _sqlConnection = new SqlConnection(BenchmarkSettings.SqlClientConnectionStringFor(Encryption));
-                _sqlConnection.Open();
+                _sqlConnection = ServerPlacement.OpenSqlClient(BenchmarkSettings.SqlClientConnectionStringFor(Encryption));
                 break;
             case "Go":
                 _adbcDriver = CAdbcDriverImporter.Load(BenchmarkSettings.GoDriverPath!);
                 _adbcDatabase = _adbcDriver.Open(new Dictionary<string, string> { ["uri"] = BenchmarkSettings.GoDriverUriFor(Encryption) });
-                _adbcConnection = _adbcDatabase.Connect(null);
+                _adbcConnection = ServerPlacement.OpenAdbc(_adbcDatabase);
                 break;
             case "Clast":
                 _adbcDriver = new SqlServerDriver();
                 _adbcDatabase = _adbcDriver.Open(BenchmarkSettings.ClastOptionsFor(Encryption));
-                _adbcConnection = _adbcDatabase.Connect(null);
+                _adbcConnection = ServerPlacement.OpenAdbc(_adbcDatabase);
                 break;
         }
     }

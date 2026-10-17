@@ -45,8 +45,7 @@ public class IngestBenchmarks
         BenchmarkData.EnsureTable(Rows);
         string source = BenchmarkData.TableName(Rows);
 
-        _sqlConnection = new SqlConnection(BenchmarkSettings.SqlClientConnectionString);
-        _sqlConnection.Open();
+        _sqlConnection = ServerPlacement.OpenSqlClient(BenchmarkSettings.SqlClientConnectionString);
         using (var command = new SqlCommand($"DROP TABLE IF EXISTS {TargetTable}; CREATE TABLE {TargetTable} ({BenchmarkData.Columns})", _sqlConnection))
         {
             command.ExecuteNonQuery();
@@ -64,7 +63,7 @@ public class IngestBenchmarks
             case "Go":
                 _adbcDriver = CAdbcDriverImporter.Load(BenchmarkSettings.GoDriverPath!);
                 _adbcDatabase = _adbcDriver.Open(new Dictionary<string, string> { ["uri"] = BenchmarkSettings.GoDriverUri });
-                _adbcConnection = _adbcDatabase.Connect(null);
+                _adbcConnection = ServerPlacement.OpenAdbc(_adbcDatabase);
                 LoadBatches(source);
                 // The Go driver cannot ingest uint8 (its own mapping for tinyint), so widen it.
                 _batches = _batches.Select(WidenUInt8).ToList();
@@ -72,7 +71,7 @@ public class IngestBenchmarks
             case "Clast":
                 _adbcDriver = new SqlServerDriver();
                 _adbcDatabase = _adbcDriver.Open(BenchmarkSettings.ClastOptions);
-                _adbcConnection = _adbcDatabase.Connect(null);
+                _adbcConnection = ServerPlacement.OpenAdbc(_adbcDatabase);
                 LoadBatches(source);
                 break;
         }
