@@ -21,6 +21,19 @@ dotnet build -c Release
 In an existing clone, run `git submodule update --init` first. To build
 against another ADBC checkout, pass `-p:AdbcCSharpRoot=<path>\csharp`.
 
+## Platforms
+
+Windows, Linux and macOS (x64 and ARM64), on .NET 10. CI runs the full test
+suite on Linux against SQL Server 2025 in a container, and the tests that need
+no server on all three systems.
+
+- Named pipes and LocalDB are Windows-only; elsewhere connect over TCP.
+- Integrated authentication uses SSPI on Windows and Kerberos (GSSAPI)
+  elsewhere: get a ticket with `kinit` first. NTLM off Windows needs the
+  `gss-ntlmssp` package.
+- TLS uses SChannel on Windows, OpenSSL on Linux and Apple's TLS stack on
+  macOS; the latter may cap strict (TDS 8) connections at TLS 1.2.
+
 ## Testing
 
 Tests that need a server read a JSON file named by `MSSQL_TEST_CONFIG_FILE`;
