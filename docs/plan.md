@@ -108,6 +108,26 @@ original connect timeout. Parallel-read helper sessions start from the
 original server and are routed in turn. Enhanced routing (feature 0x0F,
 which can also name a database) is not requested yet.
 
+## Connect retry
+
+A login that fails with one of Azure's transient errors (SqlClient's list:
+4060, 10928, 10929, 40020, 40143, 40166, 40197, 40501, 40540, 40613, 42108,
+42109) is retried from the start, routing included, after
+`adbc.mssql.connect_retry_interval` seconds (1–60, default 10), up to
+`adbc.mssql.connect_retry_count` times (0–255), as long as the wait leaves
+some of the connect timeout. With the 15-second default timeout that allows
+one retry, as in SqlClient. Other failures, including network errors, are
+not retried.
+
+The count defaults by host name as SqlClient sets it: 5 for Synapse
+serverless (`-ondemand`) and Fabric/Power BI warehouses, 2 for Azure SQL
+(`.database.windows.net` and the sovereign and Fabric equivalents), 1 for
+Synapse dedicated pools (SqlClient's general default). Elsewhere it is 0,
+where SqlClient uses 1: none of the errors but 4060 come from other servers,
+and there 4060 ("cannot open database") is nearly always a wrong name that a
+retry would only report 10 seconds later. SqlClient also raises an explicit
+count of 1 for Azure hosts; here an explicit count is used as given.
+
 ## Encryption
 
 | `adbc.mssql.encrypt` | Protocol | TLS |

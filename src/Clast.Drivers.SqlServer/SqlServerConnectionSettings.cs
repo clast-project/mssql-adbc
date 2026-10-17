@@ -54,6 +54,9 @@ internal sealed class SqlServerConnectionSettings
     public int PacketSize { get; private set; } = TdsConstants.MaxPacketSize;
     public string ApplicationName { get; private set; } = "Clast.Drivers.SqlServer";
     public TimeSpan ConnectTimeout { get; private set; } = TimeSpan.FromSeconds(15);
+    /// <summary>Retries after a login fails with a transient error (see <see cref="TdsSession.IsTransient"/>).</summary>
+    public int ConnectRetryCount { get; private set; }
+    public TimeSpan ConnectRetryInterval { get; private set; } = TimeSpan.FromSeconds(10);
     public int BatchRows { get; private set; } = 65536;
     public int ParallelReads { get; private set; } = 1;
     public string? ServerSpn { get; private set; }
@@ -123,6 +126,22 @@ internal sealed class SqlServerConnectionSettings
         if (options.TryGetValue(SqlServerParameters.ConnectTimeout, out string? timeout))
         {
             settings.ConnectTimeout = TimeSpan.FromSeconds(ParseInt(SqlServerParameters.ConnectTimeout, timeout));
+        }
+        if (options.TryGetValue(SqlServerParameters.ConnectRetryCount, out string? retryCount))
+        {
+            int count = ParseInt(SqlServerParameters.ConnectRetryCount, retryCount);
+            settings.ConnectRetryCount = count is >= 0 and <= 255 ? count : throw InvalidOption(SqlServerParameters.ConnectRetryCount, retryCount);
+        }
+        else
+        {
+            settings.ConnectRetryCount = DefaultConnectRetryCount(settings.Host);
+        }
+        if (options.TryGetValue(SqlServerParameters.ConnectRetryInterval, out string? retryInterval))
+        {
+            int seconds = ParseInt(SqlServerParameters.ConnectRetryInterval, retryInterval);
+            settings.ConnectRetryInterval = seconds is >= 1 and <= 60
+                ? TimeSpan.FromSeconds(seconds)
+                : throw InvalidOption(SqlServerParameters.ConnectRetryInterval, retryInterval);
         }
         if (options.TryGetValue(SqlServerParameters.BatchRows, out string? batchRows))
         {
@@ -370,6 +389,54 @@ internal sealed class SqlServerConnectionSettings
         routed.ConnectTimeout = timeout;
         routed._entraInfo = null;
         return routed;
+    }
+
+    /// <summary>These settings with what is left of the connect timeout, for retrying a login.</summary>
+    public SqlServerConnectionSettings WithConnectTimeout(TimeSpan timeout)
+    {
+        var copy = (SqlServerConnectionSettings)MemberwiseClone();
+        copy.ConnectTimeout = timeout;
+        return copy;
+    }
+
+    private static readonly string[] s_azureSqlSuffixes =
+    [
+        ".database.windows.net",
+        ".database.cloudapi.de",
+        ".database.usgovcloudapi.net",
+        ".database.chinacloudapi.cn",
+        ".database.fabric.microsoft.com",
+    ];
+
+    private static readonly string[] s_warehouseSuffixes =
+    [
+        "datawarehouse.fabric.microsoft.com",
+        ".pbidedicated.microsoft.com",
+        ".pbidedicated.windows.net",
+    ];
+
+    /// <summary>
+    /// The connect retry count for a host, by its name, as SqlClient picks it:
+    /// Synapse serverless (<c>-ondemand</c>) and Fabric/Power BI warehouses 5,
+    /// Azure SQL 2. Unlike SqlClient, other servers get none: the transient
+    /// errors are Azure's, and on other servers the one they share (4060,
+    /// "cannot open database") is nearly always a wrong name, which a retry
+    /// only reports 10 seconds later.
+    /// </summary>
+    internal static int DefaultConnectRetryCount(string host)
+    {
+        bool onDemand = host.Contains("-ondemand.", StringComparison.OrdinalIgnoreCase);
+        if (s_warehouseSuffixes.Any(s => host.EndsWith(s, StringComparison.OrdinalIgnoreCase))
+            || (onDemand && (host.Contains(".sql.azuresynapse.", StringComparison.OrdinalIgnoreCase)
+                || s_azureSqlSuffixes.Any(s => host.EndsWith(s, StringComparison.OrdinalIgnoreCase)))))
+        {
+            return 5;
+        }
+        if (s_azureSqlSuffixes.Any(s => host.EndsWith(s, StringComparison.OrdinalIgnoreCase)))
+        {
+            return 2;
+        }
+        return host.Contains(".sql.azuresynapse.", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
     }
 
     /// <summary>Forgets a resolved endpoint (after connecting to it failed), so the next connection asks the browser again.</summary>

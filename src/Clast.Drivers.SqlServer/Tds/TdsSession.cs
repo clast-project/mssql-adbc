@@ -133,12 +133,53 @@ internal sealed class TdsSession : IDisposable
     public const int MaxRoutes = 10;
 
     /// <summary>
-    /// Connects and logs in. A server can answer the login with a routing
+    /// Connects and logs in. A login that fails with a transient error is
+    /// retried from the start (including routing) up to
+    /// <see cref="SqlServerConnectionSettings.ConnectRetryCount"/> times, after
+    /// waiting <see cref="SqlServerConnectionSettings.ConnectRetryInterval"/>,
+    /// as long as the wait leaves some of the connect timeout, as SqlClient does.
+    /// </summary>
+    public static TdsSession Connect(SqlServerConnectionSettings settings)
+    {
+        DateTime deadline = DateTime.UtcNow + settings.ConnectTimeout;
+        SqlServerConnectionSettings target = settings;
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                TdsSession session = ConnectRouted(target);
+                session.ConnectSettings = settings;
+                return session;
+            }
+            catch (SqlServerException ex) when (
+                attempt < settings.ConnectRetryCount
+                && IsTransient(ex)
+                && deadline - DateTime.UtcNow > settings.ConnectRetryInterval)
+            {
+                Thread.Sleep(settings.ConnectRetryInterval);
+                target = settings.WithConnectTimeout(deadline - DateTime.UtcNow);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Login errors that Azure SQL and Synapse return while a database is
+    /// moving, failing over, starting or busy, and that a retry may get past:
+    /// SqlClient's list, with the four it keeps only on .NET Framework.
+    /// </summary>
+    private static readonly HashSet<int> s_transientErrors =
+        [4060, 10928, 10929, 40020, 40143, 40166, 40197, 40501, 40540, 40613, 42108, 42109];
+
+    /// <summary>Whether any of an exception's errors is transient.</summary>
+    internal static bool IsTransient(SqlServerException ex) => ex.Errors.Any(e => s_transientErrors.Contains(e.Number));
+
+    /// <summary>
+    /// Connects and logs in once. A server can answer the login with a routing
     /// ENVCHANGE (Azure SQL's redirect connection policy, read-only routing,
     /// failover groups): the session is then closed and the login repeated at
     /// the host and port it names, within the original connect timeout.
     /// </summary>
-    public static TdsSession Connect(SqlServerConnectionSettings settings)
+    private static TdsSession ConnectRouted(SqlServerConnectionSettings settings)
     {
         DateTime deadline = DateTime.UtcNow + settings.ConnectTimeout;
         SqlServerConnectionSettings target = settings;
@@ -147,7 +188,6 @@ internal sealed class TdsSession : IDisposable
             TdsSession session = ConnectOnce(target);
             if (session.Route is not (string host, int port))
             {
-                session.ConnectSettings = settings;
                 return session;
             }
             session.Dispose();

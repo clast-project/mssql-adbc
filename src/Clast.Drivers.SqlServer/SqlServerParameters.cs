@@ -40,6 +40,17 @@ public static class SqlServerParameters
     /// <summary>Seconds allowed for connecting and logging in.</summary>
     public const string ConnectTimeout = "adbc.mssql.connect_timeout";
 
+    /// <summary>
+    /// How many times to retry a login that fails with a transient Azure error
+    /// (such as 40613, "database not currently available"), within the connect
+    /// timeout. Defaults to 2 for Azure SQL hosts, 5 for Synapse serverless and
+    /// Fabric warehouses, 1 for Synapse dedicated pools and 0 elsewhere.
+    /// </summary>
+    public const string ConnectRetryCount = "adbc.mssql.connect_retry_count";
+
+    /// <summary>Seconds to wait before retrying a login (1 to 60; default 10).</summary>
+    public const string ConnectRetryInterval = "adbc.mssql.connect_retry_interval";
+
     /// <summary><c>true</c> to take a table lock during bulk ingestion (<c>INSERT BULK ... WITH (TABLOCK)</c>).</summary>
     public const string IngestTableLock = "adbc.mssql.ingest.table_lock";
 

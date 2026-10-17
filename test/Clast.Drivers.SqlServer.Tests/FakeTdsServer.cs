@@ -70,6 +70,29 @@ internal sealed class FakeTdsServer : IDisposable
 
     public static byte[] Done() => [0xFD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
+    /// <summary>A failed login: an ERROR token with <paramref name="number"/>, then DONE with the error bit.</summary>
+    public static byte[] LoginError(int number, string message = "Login failed")
+    {
+        byte[] text = Encoding.Unicode.GetBytes(message);
+        byte[] server = Encoding.Unicode.GetBytes("fake");
+        int length = 4 + 1 + 1 + 2 + text.Length + 1 + server.Length + 1 + 4;
+        var token = new byte[3 + length];
+        token[0] = 0xAA;
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(1), (ushort)length);
+        BinaryPrimitives.WriteInt32LittleEndian(token.AsSpan(3), number);
+        token[7] = 1;
+        token[8] = 14;
+        BinaryPrimitives.WriteUInt16LittleEndian(token.AsSpan(9), (ushort)(text.Length / 2));
+        text.CopyTo(token, 11);
+        int at = 11 + text.Length;
+        token[at++] = (byte)(server.Length / 2);
+        server.CopyTo(token, at);
+        at += server.Length;
+        token[at++] = 0; // procedure name
+        BinaryPrimitives.WriteInt32LittleEndian(token.AsSpan(at), 1);
+        return [.. token, 0xFD, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    }
+
     public static byte[] FedAuthInfo(string stsUrl, string spn)
     {
         byte[] info = FedAuthInfoData(stsUrl, spn);
