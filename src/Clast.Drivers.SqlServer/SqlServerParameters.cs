@@ -1,6 +1,8 @@
 // Copyright (c) clast-project. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
+using Apache.Arrow.Adbc;
+
 namespace Clast.Drivers.SqlServer;
 
 /// <summary>
@@ -56,4 +58,9 @@ public static class SqlServerParameters
 
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
+
+    internal static AdbcException OptionNotFound(string key) =>
+        new($"Option '{key}' is not recognized or has no value", AdbcStatusCode.NotFound);
+
+    internal static string Format(long value) => value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }

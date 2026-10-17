@@ -22,6 +22,16 @@ public sealed class SqlServerDatabase : AdbcDatabase
         _options[key] = value;
     }
 
+    /// <summary>Returns an option as it was set; the password is never returned.</summary>
+    public override string GetOption(string key)
+    {
+        if (key != SqlServerParameters.Password && _options.TryGetValue(key, out string? value))
+        {
+            return value;
+        }
+        throw SqlServerParameters.OptionNotFound(key);
+    }
+
     public override AdbcConnection Connect(IReadOnlyDictionary<string, string>? options)
     {
         var merged = new Dictionary<string, string>(_options);

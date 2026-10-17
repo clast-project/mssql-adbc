@@ -17,10 +17,27 @@ public sealed class SqlServerConnection : AdbcConnection
     private readonly Stack<TdsSession> _helpers = new();
     private bool _disposed;
     private SqlServerParallelQueryStream? _parallelStream;
+    private bool _autoCommit = true;
 
     internal SqlServerConnection(IReadOnlyDictionary<string, string> options)
     {
         _session = TdsSession.Connect(SqlServerConnectionSettings.Parse(options));
+        try
+        {
+            // Standard connection options may also be given when connecting.
+            foreach (string key in (string[])[AdbcOptions.Connection.Autocommit, AdbcOptions.Connection.IsolationLevel, AdbcOptions.Connection.ReadOnly])
+            {
+                if (options.TryGetValue(key, out string? value))
+                {
+                    SetOption(key, value);
+                }
+            }
+        }
+        catch
+        {
+            _session.Dispose();
+            throw;
+        }
     }
 
     internal TdsSession Session => _session;
@@ -105,11 +122,22 @@ public sealed class SqlServerConnection : AdbcConnection
                 sessions.AddRange(opening.Select(t => t.Result));
             }
 
+            // Helpers read as this session would: in its current database and at its isolation level.
             foreach (TdsSession helper in sessions)
             {
+                string sql = "";
                 if (!string.Equals(helper.Database, _session.Database, StringComparison.Ordinal))
                 {
-                    helper.ExecuteNonQuery("USE " + IngestTarget.Quote(_session.Database));
+                    sql = "USE " + IngestTarget.Quote(_session.Database) + "; ";
+                }
+                if (helper.IsolationLevel != _session.IsolationLevel)
+                {
+                    sql += "SET TRANSACTION ISOLATION LEVEL " + (_session.IsolationLevel ?? "READ COMMITTED");
+                }
+                if (sql.Length > 0)
+                {
+                    helper.ExecuteNonQuery(sql);
+                    helper.IsolationLevel = _session.IsolationLevel;
                 }
             }
         }
@@ -168,6 +196,166 @@ public sealed class SqlServerConnection : AdbcConnection
     }
 
     public override IArrowArrayStream GetTableTypes() => SqlServerMetadata.GetTableTypes();
+
+    // ---- Options and transactions ----
+
+    public override void SetOption(string key, string value)
+    {
+        switch (key)
+        {
+            case AdbcOptions.Connection.Autocommit:
+                AutoCommit = ParseEnabled(key, value);
+                break;
+            case AdbcOptions.Connection.ReadOnly:
+                ReadOnly = ParseEnabled(key, value);
+                break;
+            case AdbcOptions.Connection.IsolationLevel:
+                IsolationLevel level;
+                try
+                {
+                    level = AdbcOptions.GetIsolationLevel(value);
+                }
+                catch (NotSupportedException)
+                {
+                    throw new AdbcException($"Invalid value '{value}' for option '{key}'", AdbcStatusCode.InvalidArgument);
+                }
+                IsolationLevel = level;
+                break;
+            case AdbcOptions.Connection.CurrentCatalog:
+                EnsureIdle();
+                _session.ExecuteNonQuery("USE " + IngestTarget.Quote(value));
+                break;
+            case AdbcOptions.Connection.CurrentDbSchema:
+                throw AdbcException.NotImplemented("SQL Server has no session-level default schema; it is a property of the database user");
+            default:
+                throw AdbcException.NotImplemented($"Unknown connection option '{key}'");
+        }
+    }
+
+    private static bool ParseEnabled(string key, string value) => value switch
+    {
+        AdbcOptions.Enabled => true,
+        AdbcOptions.Disabled => false,
+        _ => throw new AdbcException($"Invalid value '{value}' for option '{key}'", AdbcStatusCode.InvalidArgument),
+    };
+
+    /// <summary>
+    /// With autocommit off, the session runs with IMPLICIT_TRANSACTIONS ON:
+    /// the server opens a transaction at the first statement that needs one,
+    /// and <see cref="Commit"/> or <see cref="Rollback"/> ends it. Turning
+    /// autocommit back on commits any open transaction.
+    /// </summary>
+    public override bool AutoCommit
+    {
+        get => _autoCommit;
+        set
+        {
+            if (value == _autoCommit)
+            {
+                return;
+            }
+            EnsureIdle();
+            _session.ExecuteNonQuery(value
+                ? "WHILE @@TRANCOUNT > 0 COMMIT TRANSACTION; SET IMPLICIT_TRANSACTIONS OFF"
+                : "SET IMPLICIT_TRANSACTIONS ON");
+            _autoCommit = value;
+        }
+    }
+
+    public override void Commit() => EndTransaction("WHILE @@TRANCOUNT > 0 COMMIT TRANSACTION");
+
+    public override void Rollback() => EndTransaction("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION");
+
+    private void EndTransaction(string sql)
+    {
+        if (_autoCommit)
+        {
+            throw new AdbcException("There is no transaction to end while autocommit is enabled", AdbcStatusCode.InvalidState);
+        }
+        EnsureIdle();
+        _session.ExecuteNonQuery(sql);
+    }
+
+    /// <summary>SQL Server has no read-only session mode; only false is accepted.</summary>
+    public override bool ReadOnly
+    {
+        get => false;
+        set
+        {
+            if (value)
+            {
+                throw AdbcException.NotImplemented("SQL Server does not support read-only connections");
+            }
+        }
+    }
+
+    /// <summary>The session's isolation level, as the server reports it.</summary>
+    public override IsolationLevel IsolationLevel
+    {
+        get
+        {
+            EnsureIdle();
+            object? level = QueryScalar("SELECT CAST(transaction_isolation_level AS int) FROM sys.dm_exec_sessions WHERE session_id = @@SPID");
+            return level switch
+            {
+                1 => IsolationLevel.ReadUncommitted,
+                3 => IsolationLevel.RepeatableRead,
+                4 => IsolationLevel.Serializable,
+                5 => IsolationLevel.Snapshot,
+                _ => IsolationLevel.ReadCommitted,
+            };
+        }
+        set
+        {
+            string level = value switch
+            {
+                IsolationLevel.Default or IsolationLevel.ReadCommitted => "READ COMMITTED",
+                IsolationLevel.ReadUncommitted => "READ UNCOMMITTED",
+                IsolationLevel.RepeatableRead => "REPEATABLE READ",
+                IsolationLevel.Snapshot => "SNAPSHOT",
+                IsolationLevel.Serializable => "SERIALIZABLE",
+                _ => throw AdbcException.NotImplemented($"SQL Server does not support isolation level {value}"),
+            };
+            EnsureIdle();
+            _session.ExecuteNonQuery("SET TRANSACTION ISOLATION LEVEL " + level);
+            _session.IsolationLevel = level == "READ COMMITTED" ? null : level;
+        }
+    }
+
+    public override string? CurrentCatalog
+    {
+        get => _session.Database;
+        set => SetOption(AdbcOptions.Connection.CurrentCatalog, value ?? throw new ArgumentNullException(nameof(value)));
+    }
+
+    /// <summary>The default schema of the database user.</summary>
+    public override string? CurrentDbSchema
+    {
+        get
+        {
+            EnsureIdle();
+            return (string?)QueryScalar("SELECT SCHEMA_NAME()");
+        }
+        set => SetOption(AdbcOptions.Connection.CurrentDbSchema, value ?? throw new ArgumentNullException(nameof(value)));
+    }
+
+    /// <summary>Runs a query and returns the first column of its first row.</summary>
+    private object? QueryScalar(string sql)
+    {
+        using IArrowArrayStream stream = ExecuteQueryStream(sql);
+        object? value = null;
+        while (stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
+        {
+            using (batch)
+            {
+                if (value == null && batch.Length > 0)
+                {
+                    value = Arrow.ResultArrays.Value(batch.Column(0), 0);
+                }
+            }
+        }
+        return value;
+    }
 
     /// <summary>
     /// Cancels the operation in progress on this connection, including the

@@ -69,6 +69,20 @@ public sealed class SqlServerStatement : AdbcStatement
         }
     }
 
+    public override string GetOption(string key) => key switch
+    {
+        AdbcOptions.Ingest.TargetTable => _targetTable,
+        AdbcOptions.Ingest.TargetCatalog => _targetCatalog,
+        AdbcOptions.Ingest.TargetDbSchema => _targetDbSchema,
+        AdbcOptions.Ingest.Temporary => AdbcOptions.GetEnabled(_temporary),
+        AdbcOptions.Ingest.Mode => AdbcOptions.GetIngestMode(_ingestMode),
+        SqlServerParameters.IngestTableLock => AdbcOptions.GetEnabled(_tableLock),
+        SqlServerParameters.PartitionColumn => _partitionColumn,
+        SqlServerParameters.PartitionCount => SqlServerParameters.Format(_partitionCount),
+        SqlServerParameters.ParallelReads => SqlServerParameters.Format(_parallelReads ?? _connection.Session.Settings.ParallelReads),
+        _ => null,
+    } ?? throw SqlServerParameters.OptionNotFound(key);
+
     internal void ConfigureIngest(string? catalog, string? dbSchema, string table, BulkIngestMode mode, bool temporary)
     {
         _targetCatalog = catalog;
