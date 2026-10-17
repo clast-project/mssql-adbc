@@ -4,6 +4,7 @@
 using Apache.Arrow;
 using Apache.Arrow.Adbc;
 using Apache.Arrow.Ipc;
+using Clast.Drivers.SqlServer.Tds;
 
 namespace Clast.Drivers.SqlServer;
 
@@ -12,15 +13,14 @@ namespace Clast.Drivers.SqlServer;
 /// </summary>
 public sealed class SqlServerConnection : AdbcConnection
 {
-    private readonly IReadOnlyDictionary<string, string> _options;
+    private readonly TdsSession _session;
 
     internal SqlServerConnection(IReadOnlyDictionary<string, string> options)
     {
-        _options = options;
-        // TODO(M1): open transport, prelogin, TLS and login.
+        _session = TdsSession.Connect(SqlServerConnectionSettings.Parse(options));
     }
 
-    internal IReadOnlyDictionary<string, string> Options => _options;
+    internal TdsSession Session => _session;
 
     public override AdbcStatement CreateStatement()
     {
@@ -46,5 +46,11 @@ public sealed class SqlServerConnection : AdbcConnection
     public override IArrowArrayStream GetTableTypes()
     {
         throw AdbcException.NotImplemented("GetTableTypes is not yet supported");
+    }
+
+    public override void Dispose()
+    {
+        _session.Dispose();
+        base.Dispose();
     }
 }

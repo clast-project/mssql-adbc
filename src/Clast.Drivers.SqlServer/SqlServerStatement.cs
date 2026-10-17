@@ -25,7 +25,8 @@ public sealed class SqlServerStatement : AdbcStatement
 
     public override UpdateResult ExecuteUpdate()
     {
-        // TODO(M2/M3): SQL batch row counts and bulk ingestion.
-        throw AdbcException.NotImplemented("ExecuteUpdate is not yet supported");
+        // TODO(M3): bulk ingestion.
+        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        return new UpdateResult(_connection.Session.ExecuteNonQuery(sql));
     }
 }

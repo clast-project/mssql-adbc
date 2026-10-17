@@ -35,6 +35,9 @@ public static class SqlServerParameters
     /// <summary>Application name reported to the server.</summary>
     public const string ApplicationName = "adbc.mssql.application_name";
 
+    /// <summary>Seconds allowed for connecting and logging in.</summary>
+    public const string ConnectTimeout = "adbc.mssql.connect_timeout";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 }

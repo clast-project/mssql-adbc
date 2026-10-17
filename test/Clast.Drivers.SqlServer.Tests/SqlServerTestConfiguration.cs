@@ -22,6 +22,10 @@ public sealed class SqlServerTestConfiguration
     [JsonPropertyName("sqlClientConnectionString")]
     public string SqlClientConnectionString { get; set; } = "";
 
+    /// <summary>Whether the server has a certificate that allows TDS 8 strict encryption.</summary>
+    [JsonPropertyName("supportsStrictEncryption")]
+    public bool SupportsStrictEncryption { get; set; }
+
     public static bool IsAvailable =>
         Environment.GetEnvironmentVariable(EnvironmentVariable) is { Length: > 0 } path && File.Exists(path);
 
