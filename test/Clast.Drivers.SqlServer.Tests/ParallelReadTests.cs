@@ -149,7 +149,17 @@ public class ParallelReadTests
             use.ExecuteUpdate();
         }
         List<int> values = ReadParallel(connection,
-            "SELECT CAST(n AS bigint) AS k, CAST(n AS int) AS v FROM (SELECT TOP (5000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b) AS t WHERE DB_NAME() = 'tempdb'",
+            // Rows from VALUES, not tempdb's catalog: scanning that while other tests create temp
+            // tables can make this query a deadlock victim.
+            """
+            SELECT CAST(n AS bigint) AS k, CAST(n AS int) AS v
+            FROM (SELECT TOP (5000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                  FROM (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) AS a(x)
+                  CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) AS b(x)
+                  CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) AS c(x)
+                  CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) AS d(x)) AS t
+            WHERE DB_NAME() = 'tempdb'
+            """,
             4);
         Assert.Equal(5000, values.Count);
     }
