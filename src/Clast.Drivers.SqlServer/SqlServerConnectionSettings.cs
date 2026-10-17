@@ -192,6 +192,7 @@ internal sealed class SqlServerConnectionSettings
             }
             Host = NormalizeHost(slash >= 0 ? target.Substring(0, slash) : target);
             PipeName = instance == null || IsDefaultInstance(instance) ? @"sql\query" : $@"MSSQL${instance}\sql\query";
+            RequireNamedPipes();
             return;
         }
 
@@ -207,6 +208,7 @@ internal sealed class SqlServerConnectionSettings
             }
             Host = NormalizeHost(path.Substring(2, pipeIndex - 2));
             PipeName = path.Substring(pipeIndex + pipeMarker.Length);
+            RequireNamedPipes();
             return;
         }
 
@@ -262,6 +264,19 @@ internal sealed class SqlServerConnectionSettings
         Host = NormalizeHost(value);
     }
 
+    /// <summary>
+    /// SQL Server named pipes are Windows pipes (local, or remote over SMB).
+    /// .NET's named pipes elsewhere are Unix domain sockets, and SQL Server on
+    /// Linux does not offer pipes, so other systems connect over TCP only.
+    /// </summary>
+    private static void RequireNamedPipes()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new AdbcException("Named pipes are only supported on Windows; connect over TCP instead (host or host,port)", AdbcStatusCode.NotImplemented);
+        }
+    }
+
     /// <summary>MSSQLSERVER names the default instance, as with Microsoft's native client.</summary>
     private static bool IsDefaultInstance(string instance) => string.Equals(instance, "MSSQLSERVER", StringComparison.OrdinalIgnoreCase);
 
@@ -294,14 +309,16 @@ internal sealed class SqlServerConnectionSettings
                 Port = port;
                 PipeName = null;
             }
-            else if (!_tcpOnly && instance.PipeName != null)
+            else if (!_tcpOnly && instance.PipeName != null && OperatingSystem.IsWindows())
             {
                 PipeName = instance.PipeName;
             }
             else
             {
+                // Named pipes are a Windows (SMB) transport; elsewhere only TCP is possible.
+                bool pipes = !_tcpOnly && OperatingSystem.IsWindows();
                 throw new AdbcException(
-                    $"Instance '{InstanceName}' on '{Host}' does not accept TCP connections{(_tcpOnly ? "" : " or named pipes")}",
+                    $"Instance '{InstanceName}' on '{Host}' does not accept TCP connections{(pipes ? " or named pipes" : "")}",
                     AdbcStatusCode.IOError);
             }
             _resolved = true;

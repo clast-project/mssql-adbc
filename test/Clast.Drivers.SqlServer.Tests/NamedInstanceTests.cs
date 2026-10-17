@@ -37,6 +37,9 @@ public sealed class NamedInstanceTests : IDisposable
         _browser.Dispose();
     }
 
+    /// <summary>The real server's TCP port, which the fake browser reports for its instances.</summary>
+    private static int RealPort => SqlServerTestConfiguration.Load().Endpoint.Port;
+
     private static AdbcConnection Connect(string server, Action<Dictionary<string, string>>? configure = null)
     {
         SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
@@ -74,7 +77,7 @@ public sealed class NamedInstanceTests : IDisposable
     [SkippableFact]
     public void ResolvesTcpPortThroughBrowser()
     {
-        _browser.Respond = _ => Reply(Record("FAKE", 1433, null));
+        _browser.Respond = _ => Reply(Record("FAKE", RealPort, null));
         using AdbcConnection connection = Connect(@"localhost\FAKE");
         Assert.True(((SqlServerConnection)connection).Session.ServerVersion.Major >= 11);
         Assert.Equal(SqlBrowser.CreateRequest("FAKE"), _browser.Requests.First());
@@ -84,7 +87,7 @@ public sealed class NamedInstanceTests : IDisposable
     public void ResolvedInstanceWorksWithStrictEncryption()
     {
         Skip.IfNot(SqlServerTestConfiguration.Load().SupportsStrictEncryption, "No certificate for TDS 8 strict encryption");
-        _browser.Respond = _ => Reply(Record("FAKE", 1433, null));
+        _browser.Respond = _ => Reply(Record("FAKE", RealPort, null));
         using AdbcConnection connection = Connect(@"tcp:localhost\FAKE", o => o[SqlServerParameters.Encrypt] = "strict");
         Assert.Equal(0x08000000u, ((SqlServerConnection)connection).Session.TdsVersion);
     }
@@ -92,6 +95,14 @@ public sealed class NamedInstanceTests : IDisposable
     [SkippableFact]
     public void FallsBackToReportedPipe()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Elsewhere only TCP is possible, so an instance without it cannot be reached.
+            _browser.Respond = _ => Reply(Record("PIPED", null, @"sql\query"));
+            var unreachable = Assert.Throws<AdbcException>(() => Connect(@".\PIPED"));
+            Assert.Contains("does not accept TCP connections", unreachable.Message);
+            return;
+        }
         // TCP disabled for the instance: the browser lists only its pipe.
         _browser.Respond = _ => Reply(Record("PIPED", null, @"sql\query"));
         using (AdbcConnection connection = Connect(@".\PIPED"))
@@ -108,7 +119,7 @@ public sealed class NamedInstanceTests : IDisposable
     public void RetriesLostDatagrams()
     {
         int calls = 0;
-        _browser.Respond = _ => Interlocked.Increment(ref calls) <= 2 ? null : Reply(Record("LOSSY", 1433, null));
+        _browser.Respond = _ => Interlocked.Increment(ref calls) <= 2 ? null : Reply(Record("LOSSY", RealPort, null));
         using AdbcConnection connection = Connect(@"127.0.0.1\LOSSY");
         Assert.True(calls >= 3);
     }
@@ -129,11 +140,13 @@ public sealed class NamedInstanceTests : IDisposable
     [InlineData(@".\mssqlserver")]
     [InlineData(@"(local)\MSSQLSERVER")]
     [InlineData(@"tcp:localhost\MSSQLSERVER")]
-    [InlineData(@"localhost\ANYTHING,1433")]
+    [InlineData(@"localhost\ANYTHING,{port}")]
     [InlineData(@"np:localhost\MSSQLSERVER")]
     [InlineData(@"np:.")]
     public void DefaultInstanceAndExplicitPortsNeedNoBrowser(string server)
     {
+        Skip.If(server.StartsWith("np:", StringComparison.Ordinal) && !OperatingSystem.IsWindows(), "Named pipes are Windows-only");
+        server = server.Replace("{port}", RealPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
         _browser.Respond = _ => null;
         using AdbcConnection connection = Connect(server);
         Assert.True(((SqlServerConnection)connection).Session.ServerVersion.Major >= 11);
@@ -143,7 +156,7 @@ public sealed class NamedInstanceTests : IDisposable
     [SkippableFact]
     public void ResolutionIsSharedByParallelReadSessions()
     {
-        _browser.Respond = _ => Reply(Record("FAKE", 1433, null));
+        _browser.Respond = _ => Reply(Record("FAKE", RealPort, null));
         using AdbcConnection connection = Connect(@"localhost\FAKE", o => o[SqlServerParameters.ParallelReads] = "4");
         using AdbcStatement statement = connection.CreateStatement();
         statement.SqlQuery = "SELECT CAST(n AS bigint) AS k FROM (SELECT TOP (4000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b) AS t";

@@ -99,6 +99,7 @@ public class ConnectionTests
     [SkippableFact]
     public void ConnectsOverNamedPipe()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Named pipes are Windows-only");
         using AdbcConnection connection = Connect(o => o[SqlServerParameters.Server] = @"np:\\.\pipe\sql\query");
         Assert.True(((SqlServerConnection)connection).Session.ServerVersion.Major >= 11);
     }
@@ -122,12 +123,20 @@ public class ConnectionTests
     [SkippableFact]
     public void ConnectsByLocalNamesAndAddresses()
     {
+        SqlServerTestConfiguration.Load();
         string machine = System.Net.Dns.GetHostName();
         var servers = new List<string> { machine };
         foreach (var address in System.Net.Dns.GetHostAddresses(machine).Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork))
         {
             servers.Add(address.ToString());
-            servers.Add(System.Net.Dns.GetHostEntry(address).HostName);
+            try
+            {
+                servers.Add(System.Net.Dns.GetHostEntry(address).HostName);
+            }
+            catch (System.Net.Sockets.SocketException)
+            {
+                // No reverse DNS entry for this address (common on Linux and in containers).
+            }
         }
         foreach (string server in servers.Distinct())
         {
@@ -136,9 +145,23 @@ public class ConnectionTests
         }
     }
 
+    [SkippableTheory]
+    [InlineData(@"np:\\.\pipe\sql\query")]
+    [InlineData(@"np:localhost")]
+    [InlineData(@"np:localhost\SQLEXPRESS")]
+    public void NamedPipesAreWindowsOnly(string server)
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Named pipes work on Windows");
+        var ex = Assert.Throws<AdbcException>(() => SqlServerConnectionSettings.Parse(
+            new Dictionary<string, string> { [SqlServerParameters.Server] = server, [SqlServerParameters.Username] = "u" }));
+        Assert.Equal(AdbcStatusCode.NotImplemented, ex.Status);
+        Assert.Contains("only supported on Windows", ex.Message);
+    }
+
     [SkippableFact]
     public void ExplicitServerSpnIsUsedAsGiven()
     {
+        Skip.IfNot(SqlServerTestConfiguration.Load().UsesIntegratedSecurity, "The SPN only matters for integrated authentication");
         string lan = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
             .First(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork).ToString();
         var ex = Assert.Throws<AdbcException>(() => Connect(o =>

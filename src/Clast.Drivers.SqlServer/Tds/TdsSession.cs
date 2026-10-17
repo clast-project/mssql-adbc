@@ -452,8 +452,13 @@ internal sealed class TdsSession : IDisposable
         if (status != NegotiateAuthenticationStatusCode.Completed && status != NegotiateAuthenticationStatusCode.ContinueNeeded)
         {
             _sspiFailed = true;
+            // Elsewhere than Windows, Negotiate is GSSAPI: Kerberos needs a ticket (kinit), and NTLM
+            // needs the gss-ntlmssp package.
+            string unix = OperatingSystem.IsWindows()
+                ? ""
+                : " On this system integrated authentication uses Kerberos: obtain a ticket with kinit, and check that the server has this SPN.";
             throw new AdbcException(
-                $"Integrated authentication failed ({status}) for service principal name '{_spn}'. If the server is registered under another name, set {SqlServerParameters.ServerSpn}",
+                $"Integrated authentication failed ({status}) for service principal name '{_spn}'. If the server is registered under another name, set {SqlServerParameters.ServerSpn}.{unix}",
                 AdbcStatusCode.Unauthenticated);
         }
         return outgoing ?? [];

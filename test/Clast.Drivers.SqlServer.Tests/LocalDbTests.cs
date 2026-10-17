@@ -112,9 +112,15 @@ public sealed class LocalDbTests
         Assert.Equal(AdbcStatusCode.InvalidArgument, ex.Status);
     }
 
+    /// <summary>SqlLocalDB.exe from the newest SQL Server tools folder, or from PATH.</summary>
+    private static string SqlLocalDbExe =>
+        Directory.EnumerateFiles(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft SQL Server"), "SqlLocalDB.exe", SearchOption.AllDirectories)
+            .OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault() ?? "SqlLocalDB.exe";
+
     private static void SqlLocalDb(string arguments)
     {
-        using var process = Process.Start(new ProcessStartInfo("SqlLocalDB.exe", arguments)
+        using var process = Process.Start(new ProcessStartInfo(SqlLocalDbExe, arguments)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,

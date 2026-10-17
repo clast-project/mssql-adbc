@@ -20,6 +20,13 @@ public sealed class RoutingTests
     private static FakeTdsServer Gateway(int port, string host = "127.0.0.1") =>
         new((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Routing(host, port), .. FakeTdsServer.Done()]);
 
+    /// <summary>A gateway routing to the configured real server.</summary>
+    private static FakeTdsServer GatewayToRealServer()
+    {
+        (string host, int port) = SqlServerTestConfiguration.Load().Endpoint;
+        return Gateway(port, host);
+    }
+
     private static Dictionary<string, string> Options(int port, Action<Dictionary<string, string>>? configure = null)
     {
         SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
@@ -44,11 +51,11 @@ public sealed class RoutingTests
     [SkippableFact]
     public void FollowsTheRouteToTheRealServer()
     {
-        using FakeTdsServer gateway = Gateway(1433);
+        using FakeTdsServer gateway = GatewayToRealServer();
         using AdbcConnection connection = new SqlServerDriver().Open(Options(gateway.Port)).Connect(null);
         TdsSession session = ((SqlServerConnection)connection).Session;
 
-        Assert.Equal(("127.0.0.1", 1433), (session.Settings.Host, session.Settings.Port));
+        Assert.Equal(SqlServerTestConfiguration.Load().Endpoint, (session.Settings.Host, session.Settings.Port));
         Assert.Equal(gateway.Port, session.ConnectSettings.Port);
         Assert.NotEqual("Fake SQL", session.ServerProgramName);
         Assert.Equal(1, Scalar(connection, "SELECT 1"));
@@ -67,14 +74,14 @@ public sealed class RoutingTests
         Assert.Equal("127.0.0.1", first.ServerName);
         Assert.Equal($"localhost,{target.Port}", routed.ServerName);
         Assert.Equal("sales", routed.Database);
-        Assert.True(routed.IntegratedSecurity);
+        Assert.Equal(SqlServerTestConfiguration.Load().UsesIntegratedSecurity, routed.IntegratedSecurity);
         Assert.Equal("localhost", ((SqlServerConnection)connection).Session.Settings.Host);
     }
 
     [SkippableFact]
     public void FollowsChainedRoutes()
     {
-        using FakeTdsServer second = Gateway(1433);
+        using FakeTdsServer second = GatewayToRealServer();
         using FakeTdsServer first = Gateway(second.Port);
         using AdbcConnection connection = new SqlServerDriver().Open(Options(first.Port)).Connect(null);
         Assert.Equal(1, Scalar(connection, "SELECT 1"));
@@ -98,7 +105,7 @@ public sealed class RoutingTests
     [SkippableFact]
     public void ParallelReadSessionsAreRoutedToo()
     {
-        using FakeTdsServer gateway = Gateway(1433);
+        using FakeTdsServer gateway = GatewayToRealServer();
         using AdbcConnection connection = new SqlServerDriver().Open(Options(gateway.Port, o => o[SqlServerParameters.ParallelReads] = "3")).Connect(null);
         using AdbcStatement statement = connection.CreateStatement();
         statement.SqlQuery = "SELECT CAST(n AS bigint) AS k FROM (SELECT TOP (3000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b) AS t";
@@ -120,7 +127,8 @@ public sealed class RoutingTests
     public void RejectsARouteThatIsNotTcp()
     {
         using var gateway = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Routing("127.0.0.1", 1433, protocol: 1), .. FakeTdsServer.Done()]);
-        var ex = Assert.ThrowsAny<Exception>(() => new SqlServerDriver().Open(Options(gateway.Port)).Connect(null));
+        Dictionary<string, string> options = Options(gateway.Port);
+        var ex = Assert.ThrowsAny<Exception>(() => new SqlServerDriver().Open(options).Connect(null));
         Assert.Contains("Invalid routing information", ex.ToString());
     }
 }

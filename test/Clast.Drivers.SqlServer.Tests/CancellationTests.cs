@@ -58,6 +58,7 @@ public class CancellationTests
     [InlineData(@"np:\\.\pipe\sql\query")]
     public void CancelsRunningUpdate(string? server)
     {
+        Skip.If(server != null && !OperatingSystem.IsWindows(), "Named pipes are Windows-only");
         using AdbcConnection connection = Connect(o =>
         {
             if (server != null)
@@ -168,6 +169,7 @@ public class CancellationTests
     [InlineData(@"np:\\.\pipe\sql\query", null)]
     public void CancelRacingShortQueriesKeepsSessionInStep(string? server, string? encrypt)
     {
+        Skip.If(server != null && !OperatingSystem.IsWindows(), "Named pipes are Windows-only");
         using AdbcConnection connection = Connect(o =>
         {
             if (server != null)

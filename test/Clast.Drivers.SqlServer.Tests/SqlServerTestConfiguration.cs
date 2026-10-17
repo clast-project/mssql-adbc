@@ -33,6 +33,20 @@ public sealed class SqlServerTestConfiguration
     [JsonPropertyName("serverCertificateTrusted")]
     public bool ServerCertificateTrusted { get; set; }
 
+    /// <summary>The configured server's host and TCP port, as the driver resolves the server option.</summary>
+    public (string Host, int Port) Endpoint
+    {
+        get
+        {
+            SqlServerConnectionSettings settings = SqlServerConnectionSettings.Parse(Options, requireCredentials: false);
+            return (settings.Host, settings.Port);
+        }
+    }
+
+    /// <summary>Whether the configuration logs in with integrated (Windows or Kerberos) authentication.</summary>
+    public bool UsesIntegratedSecurity =>
+        Options.TryGetValue(SqlServerParameters.IntegratedSecurity, out string? value) && value is "true" or "1" or "yes";
+
     public static bool IsAvailable =>
         Environment.GetEnvironmentVariable(EnvironmentVariable) is { Length: > 0 } path && File.Exists(path);
 

@@ -117,6 +117,8 @@ public sealed class EntraAuthenticationTests
         SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
         var options = new Dictionary<string, string>(config.Options);
         options.Remove(SqlServerParameters.IntegratedSecurity);
+        options.Remove(SqlServerParameters.Username);
+        options.Remove(SqlServerParameters.Password);
         using AdbcDatabase database = new SqlServerDriver().Open(options);
         var discovery = Assert.Throws<AdbcException>(() => database.GetOption(SqlServerParameters.EntraAuthority));
         Assert.Equal(AdbcStatusCode.NotImplemented, discovery.Status);

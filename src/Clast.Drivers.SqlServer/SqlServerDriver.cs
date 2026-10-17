@@ -14,6 +14,11 @@ public sealed class SqlServerDriver : AdbcDriver
 
     public override AdbcDatabase Open(IReadOnlyDictionary<string, string> parameters)
     {
+        // TDS is little-endian, and the decoders read values in place with the host's byte order.
+        if (!BitConverter.IsLittleEndian)
+        {
+            throw new AdbcException("The SQL Server driver requires a little-endian processor", AdbcStatusCode.NotImplemented);
+        }
         return new SqlServerDatabase(parameters);
     }
 }
