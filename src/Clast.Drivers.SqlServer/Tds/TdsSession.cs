@@ -71,6 +71,12 @@ internal sealed class TdsSession : IDisposable
 
     public bool Utf8Supported { get; private set; }
 
+    /// <summary>Version of native json transport the server acknowledged, or 0 (json then arrives as nvarchar(max)).</summary>
+    public byte JsonVersion { get; private set; }
+
+    /// <summary>Version of native vector transport the server acknowledged, or 0 (vectors then arrive as JSON text).</summary>
+    public byte VectorVersion { get; private set; }
+
     /// <summary>The isolation level this driver last set on the session (for example <c>SERIALIZABLE</c>), or null for the default.</summary>
     public string? IsolationLevel { get; set; }
 
@@ -781,10 +787,22 @@ internal sealed class TdsSession : IDisposable
                 return;
             }
             int length = Reader.ReadInt32();
-            if (feature == FeatureId.Utf8Support && length >= 1)
+            if (feature is FeatureId.Utf8Support or FeatureId.JsonSupport or FeatureId.VectorSupport && length >= 1)
             {
-                Utf8Supported = (Reader.ReadByte() & 0x01) != 0;
+                byte value = Reader.ReadByte();
                 length -= 1;
+                switch (feature)
+                {
+                    case FeatureId.Utf8Support:
+                        Utf8Supported = (value & 0x01) != 0;
+                        break;
+                    case FeatureId.JsonSupport:
+                        JsonVersion = value;
+                        break;
+                    case FeatureId.VectorSupport:
+                        VectorVersion = value;
+                        break;
+                }
             }
             Reader.Skip(length);
         }

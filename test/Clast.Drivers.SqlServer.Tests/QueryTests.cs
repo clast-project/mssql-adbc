@@ -379,13 +379,13 @@ public class QueryTests
         Assert.Single(ReadAdbc(connection, "SELECT 1", out _, out _));
     }
 
-    [SkippableFact]
+    [Fact]
     public void UnsupportedTypeIsNotImplemented()
     {
-        using AdbcConnection connection = Connect();
-        var ex = Assert.ThrowsAny<AdbcException>(() => ReadAdbc(connection, "SELECT CAST(1 AS sql_variant) AS v", out _, out _));
+        // Every type SQL Server 2025 returns is supported; a type without a decoder still fails cleanly.
+        var column = Clast.Drivers.SqlServer.Tds.TdsColumn.Create("c", Clast.Drivers.SqlServer.Tds.TdsDataType.Null, 0);
+        var ex = Assert.ThrowsAny<AdbcException>(() => Clast.Drivers.SqlServer.Arrow.DecoderFactory.Create(column, 16, []));
         Assert.Equal(AdbcStatusCode.NotImplemented, ex.Status);
-        Assert.Single(ReadAdbc(connection, "SELECT 1", out _, out _));
     }
 
     [SkippableFact]

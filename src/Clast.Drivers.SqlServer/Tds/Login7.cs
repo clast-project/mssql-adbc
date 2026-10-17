@@ -99,8 +99,15 @@ internal static class Login7
         string language = "";
         string database = settings.Database;
 
-        // Feature extensions: UTF-8 support, then the terminator.
-        ReadOnlySpan<byte> featureExt = [(byte)FeatureId.Utf8Support, 0, 0, 0, 0, (byte)FeatureId.Terminator];
+        // Feature extensions: UTF-8 support; native json and vector types (version 1 each,
+        // ignored by servers that do not know them); then the terminator.
+        ReadOnlySpan<byte> featureExt =
+        [
+            (byte)FeatureId.Utf8Support, 0, 0, 0, 0,
+            (byte)FeatureId.JsonSupport, 1, 0, 0, 0, 1,
+            (byte)FeatureId.VectorSupport, 1, 0, 0, 0, 1,
+            (byte)FeatureId.Terminator,
+        ];
 
         int variableLength =
             2 * (hostName.Length + userName.Length + password.Length + appName.Length + serverName.Length

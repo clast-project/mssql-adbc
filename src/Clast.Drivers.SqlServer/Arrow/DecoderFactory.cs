@@ -71,11 +71,24 @@ internal static class DecoderFactory
             case TdsDataType.NVarChar:
             case TdsDataType.NChar:
             case TdsDataType.Xml:
+            case TdsDataType.Text:
+            case TdsDataType.NText:
                 return new VariableDecoder(column, StringType.Default, capacity, defaultCollation);
+
+            case TdsDataType.Json:
+                return new VariableDecoder(column, JsonType.Default, capacity, defaultCollation);
 
             case TdsDataType.BigVarBinary:
             case TdsDataType.BigBinary:
+            case TdsDataType.Image:
+            case TdsDataType.Udt: // hierarchyid, geometry, geography: their serialized bytes
                 return new VariableDecoder(column, BinaryType.Default, capacity, defaultCollation);
+
+            case TdsDataType.Vector:
+                return new VectorDecoder(column, capacity);
+
+            case TdsDataType.Variant:
+                return new VariantDecoder(column, capacity, defaultCollation);
 
             case TdsDataType.Guid:
                 return new GuidDecoder(column, capacity);

@@ -228,7 +228,7 @@ internal static class SqlServerBulkIngest
             {
                 sql.Append(", ");
             }
-            sql.Append(IngestTarget.Quote(column.Name)).Append(' ').Append(column.SqlTypeName);
+            sql.Append(IngestTarget.Quote(column.Name)).Append(' ').Append(column.BulkTypeName);
             if (collations.TryGetValue(column.Name, out string? collation))
             {
                 sql.Append(" COLLATE ").Append(collation);

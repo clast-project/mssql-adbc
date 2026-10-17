@@ -53,6 +53,12 @@ internal enum TdsDataType : byte
     Image = 0x22,
     NText = 0x63,
     Variant = 0x62,
+
+    /// <summary>json (SQL Server 2025), sent as such once the JSON feature extension is acknowledged.</summary>
+    Json = 0xF4,
+
+    /// <summary>vector (SQL Server 2025), sent as such once the vector feature extension is acknowledged.</summary>
+    Vector = 0xF5,
 }
 
 /// <summary>How a column's values are framed in a row.</summary>
@@ -98,6 +104,20 @@ internal sealed class TdsColumn
     public byte[] Collation { get; private set; } = [];
 
     public TdsLengthKind LengthKind { get; private set; }
+
+    /// <summary>The type name of a CLR user-defined type (hierarchyid, geometry, ...); otherwise null.</summary>
+    public string? UdtTypeName { get; private set; }
+
+    /// <summary>The column type to declare in INSERT BULK, when it differs from <see cref="SqlTypeName"/>.</summary>
+    private string? _bulkTypeName;
+
+    /// <summary>The column type declared in INSERT BULK.</summary>
+    public string BulkTypeName => _bulkTypeName ?? SqlTypeName;
+
+    /// <summary>For vector columns, the number of float32 dimensions.</summary>
+    public int VectorDimensions => (MaxLength - VectorHeaderLength) / 4;
+
+    public const int VectorHeaderLength = 8;
 
     /// <summary>Byte size of a <see cref="TdsLengthKind.Fixed"/> value.</summary>
     public int FixedSize { get; private set; }
@@ -246,9 +266,20 @@ internal sealed class TdsColumn
                 MaxLength = reader.ReadUInt16();
                 reader.ReadBVarChar();   // database
                 reader.ReadBVarChar();   // schema
-                reader.ReadBVarChar();   // type name
+                UdtTypeName = reader.ReadBVarChar();
                 reader.ReadUsVarChar();  // assembly-qualified name
                 LengthKind = TdsLengthKind.Plp;
+                break;
+
+            case TdsDataType.Json:
+                MaxLength = 0xFFFF;
+                LengthKind = TdsLengthKind.Plp;
+                break;
+
+            case TdsDataType.Vector:
+                MaxLength = reader.ReadUInt16();
+                Scale = reader.ReadByte(); // element type: 0 = float32
+                LengthKind = TdsLengthKind.UShortLength;
                 break;
 
             case TdsDataType.Text:
@@ -351,6 +382,22 @@ internal sealed class TdsColumn
         {
             target.LengthKind = TdsLengthKind.ByteLength;
         }
+
+        switch (Type)
+        {
+            case TdsDataType.Json:
+                // As SqlClient does: declared json, sent as varchar(max) holding UTF-8.
+                target.Type = TdsDataType.BigVarChar;
+                target.Collation = new byte[5];
+                target._bulkTypeName = "json";
+                break;
+            case TdsDataType.Udt:
+                // Sent as the type's serialized bytes.
+                target.Type = TdsDataType.BigVarBinary;
+                target.LengthKind = MaxLength == 0xFFFF ? TdsLengthKind.Plp : TdsLengthKind.UShortLength;
+                target._bulkTypeName = MaxLength == 0xFFFF ? "varbinary(max)" : $"varbinary({MaxLength})";
+                break;
+        }
         return target;
     }
 
@@ -401,6 +448,13 @@ internal sealed class TdsColumn
             case TdsDataType.BigBinary:
                 writer.WriteUInt16((ushort)MaxLength);
                 break;
+            case TdsDataType.Vector:
+                writer.WriteUInt16((ushort)MaxLength);
+                writer.WriteByte(Scale);
+                break;
+            case TdsDataType.Variant:
+                writer.WriteInt32(MaxLength);
+                break;
             default:
                 throw new AdbcException($"Sending {SqlTypeName} values is not yet supported", AdbcStatusCode.NotImplemented);
         }
@@ -441,7 +495,9 @@ internal sealed class TdsColumn
         TdsDataType.BigVarBinary or TdsDataType.VarBinary => MaxLength == 0xFFFF ? "VARBINARY(MAX)" : $"VARBINARY({MaxLength})",
         TdsDataType.BigBinary or TdsDataType.Binary => $"BINARY({MaxLength})",
         TdsDataType.Xml => "XML",
-        TdsDataType.Udt => "UDT",
+        TdsDataType.Udt => UdtTypeName?.ToUpperInvariant() ?? "UDT",
+        TdsDataType.Json => "JSON",
+        TdsDataType.Vector => $"VECTOR({VectorDimensions})",
         TdsDataType.Text => "TEXT",
         TdsDataType.NText => "NTEXT",
         TdsDataType.Image => "IMAGE",

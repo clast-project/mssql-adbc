@@ -251,8 +251,10 @@ internal sealed class MoneyDecoder : ColumnDecoder
 }
 
 /// <summary>
-/// Variable-length strings and binary, to Arrow utf8 or binary. Handles
-/// two-byte length-prefixed values and PLP (<c>max</c>) values.
+/// Variable-length strings and binary, to Arrow utf8 or binary (or an
+/// extension type stored as one, such as <c>arrow.json</c>). Handles
+/// two-byte length-prefixed values, PLP (<c>max</c>, json, CLR types) values
+/// and the legacy text/ntext/image framing.
 /// </summary>
 internal sealed class VariableDecoder : ColumnDecoder
 {
@@ -267,6 +269,7 @@ internal sealed class VariableDecoder : ColumnDecoder
     private readonly Encoding _encoding;
     private readonly System.Text.Encoding? _codePage;
     private readonly bool _plp;
+    private readonly bool _text;
     private ValueBuffer _offsets;
     private ValueBuffer _data;
     private ValidityBuffer _validity;
@@ -277,10 +280,12 @@ internal sealed class VariableDecoder : ColumnDecoder
         : base(column, arrowType)
     {
         _plp = column.LengthKind == TdsLengthKind.Plp;
+        _text = column.LengthKind == TdsLengthKind.Text;
         _encoding = column.Type switch
         {
-            TdsDataType.NVarChar or TdsDataType.NChar or TdsDataType.Xml => Encoding.Utf16,
-            TdsDataType.BigVarChar or TdsDataType.BigChar => Encoding.CodePage,
+            TdsDataType.NVarChar or TdsDataType.NChar or TdsDataType.Xml or TdsDataType.NText => Encoding.Utf16,
+            TdsDataType.BigVarChar or TdsDataType.BigChar or TdsDataType.Text => Encoding.CodePage,
+            TdsDataType.Json => Encoding.Utf8,
             _ => Encoding.Binary,
         };
 
@@ -311,6 +316,11 @@ internal sealed class VariableDecoder : ColumnDecoder
         if (_plp)
         {
             ReadPlpValue(reader);
+            return;
+        }
+        if (_text)
+        {
+            ReadTextValue(reader);
             return;
         }
 
@@ -346,6 +356,22 @@ internal sealed class VariableDecoder : ColumnDecoder
             reader.ReadBytes(_scratch.AsSpan(length, chunkLength));
             length += chunkLength;
         }
+        Append(_scratch.AsSpan(0, length));
+    }
+
+    /// <summary>text, ntext and image: text pointer (absent for NULL), timestamp, four-byte length, data.</summary>
+    private void ReadTextValue(PacketReader reader)
+    {
+        int pointerLength = reader.ReadByte();
+        if (pointerLength == 0)
+        {
+            AppendNull();
+            return;
+        }
+        reader.Skip(pointerLength + 8);
+        int length = reader.ReadInt32();
+        EnsureScratch(length);
+        reader.ReadBytes(_scratch.AsSpan(0, length));
         Append(_scratch.AsSpan(0, length));
     }
 
@@ -439,6 +465,10 @@ internal sealed class VariableDecoder : ColumnDecoder
         ArrowBuffer validity = _validity.Build();
         ArrowBuffer offsets = _offsets.Build();
         ArrowBuffer data = _data.Build();
+        if (ArrowType is ExtensionType extension)
+        {
+            return extension.CreateArray(BuildArray(extension.StorageType, length, nullCount, validity, offsets, data));
+        }
         return BuildArray(ArrowType, length, nullCount, validity, offsets, data);
     }
 }
@@ -511,9 +541,9 @@ internal sealed class GuidDecoder : ColumnDecoder
 internal sealed class TemporalDecoder : ColumnDecoder
 {
     // Days from 0001-01-01 and from 1900-01-01 to 1970-01-01.
-    private const int DaysTo1970From0001 = 719162;
+    internal const int DaysTo1970From0001 = 719162;
     private const int DaysTo1970From1900 = 25567;
-    private const long MicrosecondsPerDay = 86_400_000_000L;
+    internal const long MicrosecondsPerDay = 86_400_000_000L;
 
     private readonly TdsDataType _type;
     private readonly bool _lengthPrefixed;
@@ -555,7 +585,7 @@ internal sealed class TemporalDecoder : ColumnDecoder
         }
     }
 
-    private static long Pow10(int exponent)
+    internal static long Pow10(int exponent)
     {
         long result = 1;
         for (int i = 0; i < exponent; i++)
@@ -618,10 +648,10 @@ internal sealed class TemporalDecoder : ColumnDecoder
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int ReadUInt24(ReadOnlySpan<byte> bytes) => bytes[0] | (bytes[1] << 8) | (bytes[2] << 16);
+    internal static int ReadUInt24(ReadOnlySpan<byte> bytes) => bytes[0] | (bytes[1] << 8) | (bytes[2] << 16);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static long ReadTime(ReadOnlySpan<byte> bytes, int length)
+    internal static long ReadTime(ReadOnlySpan<byte> bytes, int length)
     {
         long value = 0;
         for (int i = length - 1; i >= 0; i--)
@@ -632,7 +662,7 @@ internal sealed class TemporalDecoder : ColumnDecoder
     }
 
     /// <summary>datetime: days since 1900 and 1/300-second ticks, rounded to milliseconds as SQL Server does.</summary>
-    private static long ReadDateTime(ReadOnlySpan<byte> bytes)
+    internal static long ReadDateTime(ReadOnlySpan<byte> bytes)
     {
         long days = BinaryPrimitives.ReadInt32LittleEndian(bytes);
         long ticks = BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(4));
@@ -641,7 +671,7 @@ internal sealed class TemporalDecoder : ColumnDecoder
     }
 
     /// <summary>smalldatetime: days since 1900 and minutes since midnight.</summary>
-    private static long ReadSmallDateTime(ReadOnlySpan<byte> bytes)
+    internal static long ReadSmallDateTime(ReadOnlySpan<byte> bytes)
     {
         long days = BinaryPrimitives.ReadUInt16LittleEndian(bytes);
         long minutes = BinaryPrimitives.ReadUInt16LittleEndian(bytes.Slice(2));
