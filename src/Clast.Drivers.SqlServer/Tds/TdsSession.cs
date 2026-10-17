@@ -45,8 +45,15 @@ internal sealed class TdsSession : IDisposable
     private static readonly byte[] s_attentionPacket =
         [(byte)PacketType.Attention, (byte)PacketStatus.EndOfMessage, 0, TdsConstants.HeaderLength, 0, 0, 1, 0];
 
-    private TdsSession(SqlServerConnectionSettings settings, string? spn = null)
+    /// <summary>Discovery only: ask the server for its Entra authority and audience (FEDAUTHINFO), then stop.</summary>
+    private readonly bool _discovery;
+
+    /// <summary>What a discovery session learned.</summary>
+    private EntraInfo? _entraInfo;
+
+    private TdsSession(SqlServerConnectionSettings settings, string? spn = null, bool discovery = false)
     {
+        _discovery = discovery;
         _settings = settings;
         _spnOverride = spn ?? settings.ServerSpn;
         Reader = new PacketReader(Stream.Null, TdsConstants.InitialPacketSize);
@@ -99,6 +106,25 @@ internal sealed class TdsSession : IDisposable
     public object? ActiveStream { get; set; }
 
     public void ClearMessages() => Messages.Clear();
+
+    /// <summary>
+    /// Asks the server which Entra authority issues its tokens and for which
+    /// audience: the handshake of the MSAL workflow, stopped at the server's
+    /// FEDAUTHINFO reply instead of answering with a token.
+    /// </summary>
+    public static EntraInfo DiscoverEntra(SqlServerConnectionSettings settings)
+    {
+        using var session = new TdsSession(settings, discovery: true);
+        try
+        {
+            session.Open();
+        }
+        catch (Exception ex) when (ex is not AdbcException)
+        {
+            throw new AdbcException($"Could not connect to '{settings.Host}': {ex.Message}", AdbcStatusCode.IOError, ex);
+        }
+        return session._entraInfo!;
+    }
 
     public static TdsSession Connect(SqlServerConnectionSettings settings)
     {
@@ -186,14 +212,15 @@ internal sealed class TdsSession : IDisposable
         SetStream(stream);
 
         // PRELOGIN
+        bool fedAuth = _discovery || _settings.AccessToken != null;
         PreLoginEncryption requested = _settings.Encrypt == EncryptMode.Optional ? PreLoginEncryption.Off : PreLoginEncryption.On;
         Writer.BeginMessage(PacketType.PreLogin);
-        Writer.WriteBytes(Login7.BuildPreLogin(requested));
+        Writer.WriteBytes(Login7.BuildPreLogin(requested, fedAuth));
         Writer.EndMessage();
 
         Reader.BeginMessage();
         byte[] response = ReadMessageBytes();
-        PreLoginEncryption serverEncryption = Login7.ParsePreLoginEncryption(response);
+        (PreLoginEncryption serverEncryption, bool fedAuthRequired) = Login7.ParsePreLogin(response);
 
         if (_settings.Encrypt != EncryptMode.Strict)
         {
@@ -224,8 +251,19 @@ internal sealed class TdsSession : IDisposable
         }
 
         // LOGIN7
+        if (fedAuth && _ssl == null)
+        {
+            // An access token is a bearer credential: never send it in clear text.
+            throw new AdbcException(
+                "The server does not support encryption, and Entra authentication sends a token that must not travel unencrypted",
+                AdbcStatusCode.IOError);
+        }
+        byte[] fedAuthFeature = fedAuth
+            ? Login7.BuildFedAuthFeature(_discovery ? Login7.FedAuthMsal : Login7.FedAuthSecurityToken, fedAuthRequired, _settings.AccessToken)
+            : [];
+
         ReadOnlySpan<byte> sspiToken = default;
-        if (_settings.IntegratedSecurity)
+        if (_settings.IntegratedSecurity && !fedAuth)
         {
             _sspi = new NegotiateAuthentication(new NegotiateAuthenticationClientOptions
             {
@@ -237,7 +275,7 @@ internal sealed class TdsSession : IDisposable
 
         uint version = _settings.Encrypt == EncryptMode.Strict ? TdsConstants.Tds80Version : TdsConstants.Tds74Version;
         Writer.BeginMessage(PacketType.Login7);
-        Writer.WriteBytes(Login7.Build(_settings, version, sspiToken));
+        Writer.WriteBytes(Login7.Build(_settings, version, sspiToken, fedAuthFeature));
         Writer.EndMessage();
 
         if (loginOnlyEncryption)
@@ -245,6 +283,12 @@ internal sealed class TdsSession : IDisposable
             SetStream(_transport);
             _ssl!.Dispose();
             _ssl = null;
+        }
+
+        if (_discovery)
+        {
+            ReadFedAuthInfo();
+            return;
         }
 
         ReadLoginResponse();
@@ -369,6 +413,93 @@ internal sealed class TdsSession : IDisposable
             buffer.WriteByte(Reader.ReadByte());
         }
         return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Reads the server's reply to an MSAL-workflow LOGIN7: a FEDAUTHINFO token
+    /// naming the token endpoint (STS URL) and the SPN the token is for. The
+    /// server then waits for a token, which a discovery session never sends.
+    /// </summary>
+    private void ReadFedAuthInfo()
+    {
+        Reader.BeginMessage();
+        while (!Reader.IsMessageComplete)
+        {
+            TokenType token = (TokenType)Reader.ReadByte();
+            switch (token)
+            {
+                case TokenType.FedAuthInfo:
+                    _entraInfo = ParseFedAuthInfo(Reader.ReadByteArray(Reader.ReadInt32()));
+                    break;
+                case TokenType.Done:
+                    ReadDone(out _, out _, out _);
+                    break;
+                case TokenType.LoginAck:
+                    throw new AdbcException("The server accepted the login without asking for an Entra token", AdbcStatusCode.InternalError);
+                default:
+                    if (!TryReadCommonToken(token))
+                    {
+                        throw new TdsProtocolException($"Unexpected token 0x{(byte)token:X2} during login");
+                    }
+                    break;
+            }
+        }
+        if (_entraInfo == null)
+        {
+            try
+            {
+                ThrowIfErrors();
+            }
+            catch (SqlServerException ex)
+            {
+                throw new AdbcException($"The server does not offer Entra authentication: {ex.Message}", AdbcStatusCode.NotImplemented, ex);
+            }
+            throw new AdbcException("The server does not offer Entra authentication", AdbcStatusCode.NotImplemented);
+        }
+    }
+
+    /// <summary>
+    /// FEDAUTHINFO data: a count, then 9-byte entries (ID, length, offset from
+    /// the count) locating UTF-16 strings: 0x01 the STS URL, 0x02 the SPN.
+    /// </summary>
+    internal static EntraInfo ParseFedAuthInfo(ReadOnlySpan<byte> data)
+    {
+        if (data.Length < 4)
+        {
+            throw new TdsProtocolException("FEDAUTHINFO token too short");
+        }
+        uint count = BinaryPrimitives.ReadUInt32LittleEndian(data);
+        string? stsUrl = null, spn = null;
+        for (int i = 0; i < count; i++)
+        {
+            int entry = 4 + i * 9;
+            if (entry + 9 > data.Length)
+            {
+                throw new TdsProtocolException("FEDAUTHINFO entry beyond the token");
+            }
+            byte id = data[entry];
+            int length = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(entry + 1)));
+            int offset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(entry + 5)));
+            if (offset < 4 || offset + length > data.Length)
+            {
+                throw new TdsProtocolException("FEDAUTHINFO data beyond the token");
+            }
+            string value = System.Text.Encoding.Unicode.GetString(data.Slice(offset, length));
+            switch (id)
+            {
+                case 0x01:
+                    stsUrl = value;
+                    break;
+                case 0x02:
+                    spn = value;
+                    break;
+            }
+        }
+        if (stsUrl == null || spn == null)
+        {
+            throw new TdsProtocolException("FEDAUTHINFO lacks the STS URL or SPN");
+        }
+        return new EntraInfo(stsUrl, spn);
     }
 
     private void ReadLoginResponse()

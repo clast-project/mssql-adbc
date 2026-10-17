@@ -211,6 +211,20 @@ public sealed class SqlServerConnection : AdbcConnection
 
     // ---- Options and transactions ----
 
+    /// <summary>
+    /// Adds the server's Entra authority and audience (asked for once, with a
+    /// probe handshake) to the standard connection options.
+    /// </summary>
+    public override string GetOption(string key)
+    {
+        if (key is SqlServerParameters.EntraAuthority or SqlServerParameters.EntraAudience)
+        {
+            EntraInfo info = _session.Settings.DiscoverEntra();
+            return key == SqlServerParameters.EntraAuthority ? info.Authority : info.Audience;
+        }
+        return base.GetOption(key);
+    }
+
     public override void SetOption(string key, string value)
     {
         switch (key)

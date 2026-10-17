@@ -17,15 +17,28 @@ public sealed class SqlServerDatabase : AdbcDatabase
         _options = new Dictionary<string, string>(options);
     }
 
+    private SqlServerConnectionSettings? _discoverySettings;
+
     public override void SetOption(string key, string value)
     {
         _options[key] = value;
+        _discoverySettings = null;
     }
 
-    /// <summary>Returns an option as it was set; the password is never returned.</summary>
+    /// <summary>
+    /// Returns an option as it was set (never the password or access token),
+    /// or the server's Entra authority or audience, which are found with a
+    /// probe handshake that needs no credentials.
+    /// </summary>
     public override string GetOption(string key)
     {
-        if (key != SqlServerParameters.Password && _options.TryGetValue(key, out string? value))
+        if (key is SqlServerParameters.EntraAuthority or SqlServerParameters.EntraAudience)
+        {
+            _discoverySettings ??= SqlServerConnectionSettings.Parse(_options, requireCredentials: false);
+            EntraInfo info = _discoverySettings.DiscoverEntra();
+            return key == SqlServerParameters.EntraAuthority ? info.Authority : info.Audience;
+        }
+        if (key is not (SqlServerParameters.Password or SqlServerParameters.AccessToken) && _options.TryGetValue(key, out string? value))
         {
             return value;
         }

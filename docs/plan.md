@@ -51,7 +51,7 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 
 | Area | Prototype | Deferred |
 |---|---|---|
-| Connect | TCP, named pipes/LocalDB, TLS, SQL auth, integrated (SSPI) | Entra, failover, MARS, pooling |
+| Connect | TCP, named pipes/LocalDB, TLS, SQL auth, integrated (SSPI) | Entra (access token and discovery since done), failover, MARS, pooling |
 | ADBC | ExecuteQuery, ExecuteUpdate, BulkIngest, GetInfo, GetTableSchema, version 1.1 | GetObjects, transactions, prepare/bind, partitions, statistics (all since done; see below) |
 | Types | bit, tinyint–bigint, real/float, decimal/numeric, (n)varchar(n), varbinary(n), date, datetime2, datetimeoffset (`arrow.timestamp_with_offset`), uniqueidentifier (`arrow.uuid`) | `(max)`/PLP, datetime/smalldatetime/time, money, sql_variant (`arrow.parquet.variant`), xml, json, vector, hierarchyid (all since done; see Type mapping) |
 
@@ -95,6 +95,22 @@ second until the connect timeout, and the result is reused by the
 connection's helper sessions (parallel reads). A failed connection to a
 resolved port (or LocalDB pipe) clears it, so a restarted instance is found
 again.
+
+## Microsoft Entra authentication
+
+- `adbc.mssql.access_token`: an Entra access token, sent in the LOGIN7
+  FEDAUTH feature extension (security-token library) after PRELOGIN
+  FEDAUTHREQUIRED; it replaces username/password/integrated security. It is
+  never sent over a connection without TLS (login-only TLS is enough, as the
+  token is inside LOGIN7). Acquiring and refreshing tokens is the caller's job.
+- Discovery: `GetOption("adbc.mssql.entra.authority")` and
+  `GetOption("adbc.mssql.entra.audience")` on the database (no credentials
+  needed) or a connection. The driver runs a probe handshake with the MSAL
+  workflow, reads the server's FEDAUTHINFO (STS URL and SPN) and hangs up
+  without logging in; the answer is cached. Servers without Entra report
+  NotImplemented. A stopgap until ADBC 1.2 can return such metadata directly.
+- Tested against a fake TDS server (real TLS 1.2 inside PRELOGIN, as SQL
+  Server does) and, for the unconfigured case, the real server.
 
 ## Type mapping
 

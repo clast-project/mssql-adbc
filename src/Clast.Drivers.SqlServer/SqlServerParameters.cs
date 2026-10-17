@@ -63,6 +63,28 @@ public static class SqlServerParameters
     /// </summary>
     public const string ServerSpn = "adbc.mssql.server_spn";
 
+    /// <summary>
+    /// A Microsoft Entra access token (for example for the
+    /// <c>https://database.windows.net/.default</c> scope) to log in with, in
+    /// place of a username, password or integrated security. Never sent
+    /// without encryption.
+    /// </summary>
+    public const string AccessToken = "adbc.mssql.access_token";
+
+    /// <summary>
+    /// Read-only, from GetOption on the database or a connection: the Entra
+    /// authority (token endpoint) the server names, such as
+    /// <c>https://login.microsoftonline.com/{tenant}</c>. Found with a probe
+    /// handshake that needs no credentials.
+    /// </summary>
+    public const string EntraAuthority = "adbc.mssql.entra.authority";
+
+    /// <summary>
+    /// Read-only, from GetOption on the database or a connection: the audience
+    /// (resource) the server wants tokens for, such as <c>https://database.windows.net/</c>.
+    /// </summary>
+    public const string EntraAudience = "adbc.mssql.entra.audience";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 

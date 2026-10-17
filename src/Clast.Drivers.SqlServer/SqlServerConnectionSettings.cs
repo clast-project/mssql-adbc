@@ -58,7 +58,13 @@ internal sealed class SqlServerConnectionSettings
     public int ParallelReads { get; private set; } = 1;
     public string? ServerSpn { get; private set; }
 
-    public static SqlServerConnectionSettings Parse(IReadOnlyDictionary<string, string> options)
+    /// <summary>A Microsoft Entra access token to log in with, instead of other credentials.</summary>
+    public string? AccessToken { get; private set; }
+
+    private EntraInfo? _entraInfo;
+
+    /// <param name="requireCredentials">False to parse without credentials, as for Entra discovery before a token is available.</param>
+    public static SqlServerConnectionSettings Parse(IReadOnlyDictionary<string, string> options, bool requireCredentials = true)
     {
         var settings = new SqlServerConnectionSettings();
 
@@ -140,10 +146,21 @@ internal sealed class SqlServerConnectionSettings
             settings.Encrypt = EncryptMode.Optional;
         }
 
-        if (!settings.IntegratedSecurity && settings.Username == null)
+        if (options.TryGetValue(SqlServerParameters.AccessToken, out string? token) && token.Length > 0)
+        {
+            if (settings.IntegratedSecurity || settings.Username != null || settings.Password != null)
+            {
+                throw new AdbcException(
+                    $"'{SqlServerParameters.AccessToken}' cannot be combined with a username, password or integrated security",
+                    AdbcStatusCode.InvalidArgument);
+            }
+            settings.AccessToken = token;
+        }
+
+        if (requireCredentials && !settings.IntegratedSecurity && settings.Username == null && settings.AccessToken == null)
         {
             throw new AdbcException(
-                $"Either '{SqlServerParameters.Username}' or '{SqlServerParameters.IntegratedSecurity}' must be set",
+                $"One of '{SqlServerParameters.Username}', '{SqlServerParameters.IntegratedSecurity}' or '{SqlServerParameters.AccessToken}' must be set",
                 AdbcStatusCode.InvalidArgument);
         }
 
@@ -304,6 +321,15 @@ internal sealed class SqlServerConnectionSettings
         PipeName = endpoint.Substring(pipe + marker.Length);
     }
 
+    /// <summary>The server's Entra authority and audience, asked for once (see <see cref="TdsSession.DiscoverEntra"/>).</summary>
+    public EntraInfo DiscoverEntra()
+    {
+        lock (_resolveLock)
+        {
+            return _entraInfo ??= TdsSession.DiscoverEntra(this);
+        }
+    }
+
     /// <summary>Forgets a resolved endpoint (after connecting to it failed), so the next connection asks the browser again.</summary>
     public void InvalidateInstance()
     {
@@ -337,3 +363,9 @@ internal sealed class SqlServerConnectionSettings
     private static AdbcException InvalidOption(string key, string value) =>
         new AdbcException($"Invalid value '{value}' for option '{key}'", AdbcStatusCode.InvalidArgument);
 }
+
+/// <summary>
+/// What a server reports for Entra authentication: the authority (STS URL)
+/// to request a token from, and the audience (SPN) the token is for.
+/// </summary>
+internal sealed record EntraInfo(string Authority, string Audience);

@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
 using System.Buffers.Binary;
+using System.Text;
 using System.Runtime.InteropServices;
 
 namespace Clast.Drivers.SqlServer.Tds;
@@ -15,17 +16,28 @@ internal static class Login7
     private const int ClientProgramVersion = 0x00010000;
 
     /// <summary>Builds the PRELOGIN request payload.</summary>
-    public static byte[] BuildPreLogin(PreLoginEncryption encryption)
+    /// <param name="federatedAuthentication">Add FEDAUTHREQUIRED, as a client offering Entra authentication must.</param>
+    public static byte[] BuildPreLogin(PreLoginEncryption encryption, bool federatedAuthentication = false)
     {
-        // Options: VERSION(6), ENCRYPTION(1), INSTOPT(1), THREADID(4), MARS(1), terminator.
-        ReadOnlySpan<(PreLoginOption Option, int Length)> options =
-        [
-            (PreLoginOption.Version, 6),
-            (PreLoginOption.Encryption, 1),
-            (PreLoginOption.InstOpt, 1),
-            (PreLoginOption.ThreadId, 4),
-            (PreLoginOption.Mars, 1),
-        ];
+        // Options: VERSION(6), ENCRYPTION(1), INSTOPT(1), THREADID(4), MARS(1), [FEDAUTHREQUIRED(1)], terminator.
+        ReadOnlySpan<(PreLoginOption Option, int Length)> options = federatedAuthentication
+            ?
+            [
+                (PreLoginOption.Version, 6),
+                (PreLoginOption.Encryption, 1),
+                (PreLoginOption.InstOpt, 1),
+                (PreLoginOption.ThreadId, 4),
+                (PreLoginOption.Mars, 1),
+                (PreLoginOption.FedAuthRequired, 1),
+            ]
+            :
+            [
+                (PreLoginOption.Version, 6),
+                (PreLoginOption.Encryption, 1),
+                (PreLoginOption.InstOpt, 1),
+                (PreLoginOption.ThreadId, 4),
+                (PreLoginOption.Mars, 1),
+            ];
 
         int headerLength = options.Length * 5 + 1;
         int totalLength = headerLength;
@@ -56,14 +68,23 @@ internal static class Login7
         payload[position++] = 0; // INSTOPT: default instance
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(position), Environment.CurrentManagedThreadId);
         position += 4;
-        payload[position] = 0; // MARS off
+        payload[position++] = 0; // MARS off
+        if (federatedAuthentication)
+        {
+            payload[position] = 1; // FEDAUTHREQUIRED
+        }
 
         return payload;
     }
 
-    /// <summary>Extracts the server's ENCRYPTION choice from a PRELOGIN response.</summary>
-    public static PreLoginEncryption ParsePreLoginEncryption(ReadOnlySpan<byte> payload)
+    /// <summary>
+    /// The server's ENCRYPTION choice from a PRELOGIN response, and whether it
+    /// answered FEDAUTHREQUIRED with 1 (echoed back in the FEDAUTH feature).
+    /// </summary>
+    public static (PreLoginEncryption Encryption, bool FedAuthRequired) ParsePreLogin(ReadOnlySpan<byte> payload)
     {
+        PreLoginEncryption? encryption = null;
+        bool fedAuthRequired = false;
         int index = 0;
         while (index < payload.Length && payload[index] != (byte)PreLoginOption.Terminator)
         {
@@ -76,23 +97,69 @@ internal static class Login7
             int length = BinaryPrimitives.ReadUInt16BigEndian(payload.Slice(index + 3));
             if (option == (byte)PreLoginOption.Encryption && length >= 1 && offset < payload.Length)
             {
-                return (PreLoginEncryption)payload[offset];
+                encryption = (PreLoginEncryption)payload[offset];
+            }
+            else if (option == (byte)PreLoginOption.FedAuthRequired && length >= 1 && offset < payload.Length)
+            {
+                fedAuthRequired = payload[offset] == 1;
             }
             index += 5;
         }
-        throw new TdsProtocolException("The PRELOGIN response did not include an ENCRYPTION option");
+        return encryption is PreLoginEncryption value
+            ? (value, fedAuthRequired)
+            : throw new TdsProtocolException("The PRELOGIN response did not include an ENCRYPTION option");
+    }
+
+    /// <summary>FEDAUTH feature-extension libraries.</summary>
+    public const byte FedAuthSecurityToken = 0x01;
+    public const byte FedAuthMsal = 0x02;
+
+    /// <summary>The MSAL workflow SqlClient sends for token-based (non-password) methods.</summary>
+    public const byte MsalWorkflowDefault = 0x03;
+
+    /// <summary>
+    /// The FEDAUTH feature extension: an options byte (library in the upper
+    /// seven bits, the echo of the server's FEDAUTHREQUIRED in the lowest),
+    /// then for a security token its length and UTF-16 bytes, or for MSAL the
+    /// workflow, which makes the server reply with FEDAUTHINFO.
+    /// </summary>
+    public static byte[] BuildFedAuthFeature(byte library, bool echo, string? token)
+    {
+        byte options = (byte)((library << 1) | (echo ? 1 : 0));
+        byte[] data;
+        if (library == FedAuthSecurityToken)
+        {
+            byte[] tokenBytes = Encoding.Unicode.GetBytes(token!);
+            data = new byte[1 + 4 + tokenBytes.Length];
+            data[0] = options;
+            BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(1), tokenBytes.Length);
+            tokenBytes.CopyTo(data, 5);
+        }
+        else
+        {
+            data = [options, MsalWorkflowDefault];
+        }
+
+        var feature = new byte[5 + data.Length];
+        feature[0] = (byte)FeatureId.FedAuth;
+        BinaryPrimitives.WriteInt32LittleEndian(feature.AsSpan(1), data.Length);
+        data.CopyTo(feature, 5);
+        return feature;
     }
 
     /// <summary>Builds the LOGIN7 record, including feature extensions.</summary>
+    /// <param name="fedAuth">A FEDAUTH feature extension (Entra authentication), which replaces the other credentials.</param>
     public static byte[] Build(
         SqlServerConnectionSettings settings,
         uint tdsVersion,
-        ReadOnlySpan<byte> sspi)
+        ReadOnlySpan<byte> sspi,
+        ReadOnlySpan<byte> fedAuth = default)
     {
-        bool useSspi = settings.IntegratedSecurity;
+        bool useSspi = settings.IntegratedSecurity && fedAuth.IsEmpty;
+        bool credentials = !useSspi && fedAuth.IsEmpty;
         string hostName = Environment.MachineName;
-        string userName = useSspi ? "" : settings.Username ?? "";
-        string password = useSspi ? "" : settings.Password ?? "";
+        string userName = credentials ? settings.Username ?? "" : "";
+        string password = credentials ? settings.Password ?? "" : "";
         string appName = settings.ApplicationName;
         string serverName = settings.Host;
         string clientInterface = "Clast.Drivers.SqlServer";
@@ -101,13 +168,13 @@ internal static class Login7
 
         // Feature extensions: UTF-8 support; native json and vector types (version 1 each,
         // ignored by servers that do not know them); then the terminator.
-        ReadOnlySpan<byte> featureExt =
+        ReadOnlySpan<byte> standardFeatures =
         [
             (byte)FeatureId.Utf8Support, 0, 0, 0, 0,
             (byte)FeatureId.JsonSupport, 1, 0, 0, 0, 1,
             (byte)FeatureId.VectorSupport, 1, 0, 0, 0, 1,
-            (byte)FeatureId.Terminator,
         ];
+        byte[] featureExt = [.. fedAuth, .. standardFeatures, (byte)FeatureId.Terminator];
 
         int variableLength =
             2 * (hostName.Length + userName.Length + password.Length + appName.Length + serverName.Length
