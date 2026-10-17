@@ -31,6 +31,69 @@ public class ConnectionTests
         Assert.True(session.ServerVersion.Major >= 11);
         Assert.False(string.IsNullOrEmpty(session.Database));
         Assert.Equal(5, session.DefaultCollation.Length);
+
+        // Strict is TDS 8 over TLS 1.3 (where the OS has it); otherwise TDS 7.4, with TLS only
+        // for the whole session under mandatory and only for the login under optional.
+        Assert.Equal(mode == "strict" ? 0x08000000u : 0x74000004u, session.TdsVersion);
+        if (mode == "strict")
+        {
+            AssertTls13(session);
+        }
+        else
+        {
+            Assert.Equal(mode == "mandatory" ? System.Security.Authentication.SslProtocols.Tls12 : null, session.TlsProtocol);
+        }
+    }
+
+    private static void AssertTls13(Clast.Drivers.SqlServer.Tds.TdsSession session)
+    {
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348) || OperatingSystem.IsLinux())
+        {
+            Assert.Equal(System.Security.Authentication.SslProtocols.Tls13, session.TlsProtocol);
+        }
+    }
+
+    /// <summary>
+    /// Windows caches TLS sessions per host whatever the TDS version, so without care a
+    /// strict connection resumes an earlier mandatory connection's TLS 1.2 session.
+    /// </summary>
+    [SkippableFact]
+    public void StrictNegotiatesTls13AfterAMandatoryConnection()
+    {
+        Skip.IfNot(SqlServerTestConfiguration.Load().SupportsStrictEncryption, "No certificate for TDS 8 strict encryption");
+        using (AdbcConnection mandatory = Connect(o => o[SqlServerParameters.Encrypt] = "mandatory"))
+        {
+            Assert.Equal(System.Security.Authentication.SslProtocols.Tls12, ((SqlServerConnection)mandatory).Session.TlsProtocol);
+        }
+        using AdbcConnection strict = Connect(o => o[SqlServerParameters.Encrypt] = "strict");
+        AssertTls13(((SqlServerConnection)strict).Session);
+    }
+
+    [SkippableTheory]
+    [InlineData("strict")]
+    [InlineData("mandatory")]
+    public void ValidatesTheServerCertificate(string mode)
+    {
+        SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
+        Skip.IfNot(config.ServerCertificateTrusted, "The server's certificate is not trusted here");
+        Skip.If(mode == "strict" && !config.SupportsStrictEncryption, "No certificate for TDS 8 strict encryption");
+        using (AdbcConnection connection = Connect(o =>
+        {
+            o[SqlServerParameters.Encrypt] = mode;
+            o[SqlServerParameters.TrustServerCertificate] = "false";
+        }))
+        {
+            Assert.NotNull(((SqlServerConnection)connection).Session.TlsProtocol);
+        }
+
+        // The certificate names hosts, not addresses.
+        var ex = Assert.ThrowsAny<AdbcException>(() => Connect(o =>
+        {
+            o[SqlServerParameters.Server] = "127.0.0.1";
+            o[SqlServerParameters.Encrypt] = mode;
+            o[SqlServerParameters.TrustServerCertificate] = "false";
+        }));
+        Assert.Contains("RemoteCertificateNameMismatch", ex.Message);
     }
 
     [SkippableFact]

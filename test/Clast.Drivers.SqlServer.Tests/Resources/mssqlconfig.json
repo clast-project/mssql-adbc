@@ -5,6 +5,7 @@
     "adbc.mssql.integrated_security": "true",
     "adbc.mssql.trust_server_certificate": "true"
   },
-  "supportsStrictEncryption": false,
+  "supportsStrictEncryption": true,
+  "serverCertificateTrusted": true,
   "sqlClientConnectionString": "Server=tcp:localhost;Database=master;Integrated Security=true;TrustServerCertificate=true"
 }

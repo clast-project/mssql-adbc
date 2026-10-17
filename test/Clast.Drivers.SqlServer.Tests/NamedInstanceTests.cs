@@ -81,6 +81,15 @@ public sealed class NamedInstanceTests : IDisposable
     }
 
     [SkippableFact]
+    public void ResolvedInstanceWorksWithStrictEncryption()
+    {
+        Skip.IfNot(SqlServerTestConfiguration.Load().SupportsStrictEncryption, "No certificate for TDS 8 strict encryption");
+        _browser.Respond = _ => Reply(Record("FAKE", 1433, null));
+        using AdbcConnection connection = Connect(@"tcp:localhost\FAKE", o => o[SqlServerParameters.Encrypt] = "strict");
+        Assert.Equal(0x08000000u, ((SqlServerConnection)connection).Session.TdsVersion);
+    }
+
+    [SkippableFact]
     public void FallsBackToReportedPipe()
     {
         // TCP disabled for the instance: the browser lists only its pipe.

@@ -99,6 +99,9 @@ internal sealed class TdsSession : IDisposable
 
     public bool IsBroken => _broken;
 
+    /// <summary>The TLS version protecting the session, or null when it is unencrypted (or only the login was).</summary>
+    public System.Security.Authentication.SslProtocols? TlsProtocol => _ssl?.SslProtocol;
+
     /// <summary>True when the current request has been cancelled and the response is being cut short.</summary>
     public bool IsCancelRequested => _cancelPending || _attentionSent;
 
@@ -213,7 +216,14 @@ internal sealed class TdsSession : IDisposable
 
         // PRELOGIN
         bool fedAuth = _discovery || _settings.AccessToken != null;
-        PreLoginEncryption requested = _settings.Encrypt == EncryptMode.Optional ? PreLoginEncryption.Off : PreLoginEncryption.On;
+        // Under strict encryption TLS is already in place, so (as SqlClient does) the
+        // ENCRYPTION option says "not supported" rather than asking for TLS again.
+        PreLoginEncryption requested = _settings.Encrypt switch
+        {
+            EncryptMode.Optional => PreLoginEncryption.Off,
+            EncryptMode.Strict => PreLoginEncryption.NotSupported,
+            _ => PreLoginEncryption.On,
+        };
         Writer.BeginMessage(PacketType.PreLogin);
         Writer.WriteBytes(Login7.BuildPreLogin(requested, fedAuth));
         Writer.EndMessage();
@@ -361,6 +371,10 @@ internal sealed class TdsSession : IDisposable
         if (strict)
         {
             options.ApplicationProtocols = [new SslApplicationProtocol(TdsConstants.Tds8AlpnProtocol)];
+            // Windows caches TLS sessions per target host, whatever the mode: a strict connection
+            // could resume the TLS 1.2 session of an earlier TDS 7.x connection to the same server
+            // instead of negotiating TLS 1.3. Strict connections always do a full handshake.
+            options.AllowTlsResume = false;
         }
         return options;
     }

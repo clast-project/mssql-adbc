@@ -26,6 +26,13 @@ public sealed class SqlServerTestConfiguration
     [JsonPropertyName("supportsStrictEncryption")]
     public bool SupportsStrictEncryption { get; set; }
 
+    /// <summary>
+    /// The server's certificate is trusted by this machine and names the
+    /// configured server, so connections can validate it (no trust_server_certificate).
+    /// </summary>
+    [JsonPropertyName("serverCertificateTrusted")]
+    public bool ServerCertificateTrusted { get; set; }
+
     public static bool IsAvailable =>
         Environment.GetEnvironmentVariable(EnvironmentVariable) is { Length: > 0 } path && File.Exists(path);
 

@@ -96,6 +96,21 @@ connection's helper sessions (parallel reads). A failed connection to a
 resolved port (or LocalDB pipe) clears it, so a restarted instance is found
 again.
 
+## Encryption
+
+| `adbc.mssql.encrypt` | Protocol | TLS |
+|---|---|---|
+| `optional` | TDS 7.4 | login only (TLS 1.2 inside PRELOGIN) |
+| `mandatory` (default) | TDS 7.4 | whole session; SQL Server uses TLS 1.2 inside PRELOGIN |
+| `strict` | TDS 8 | TLS before any TDS traffic (ALPN `tds/8.0`), TLS 1.3 where both ends have it; the certificate is always validated unless trusted explicitly |
+
+Verified against SQL Server 2025 with a certificate from
+`scripts/New-SqlServerTlsCertificate.ps1`. Under strict the PRELOGIN
+ENCRYPTION option says "not supported" (TLS is already in place), as
+SqlClient sends it, and TLS session resumption is off: Windows caches sessions
+per host regardless of TDS version, so a strict connection would otherwise
+resume a TDS 7.x connection's TLS 1.2 session.
+
 ## Microsoft Entra authentication
 
 - `adbc.mssql.access_token`: an Entra access token, sent in the LOGIN7
