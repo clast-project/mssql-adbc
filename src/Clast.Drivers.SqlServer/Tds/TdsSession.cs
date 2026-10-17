@@ -28,6 +28,8 @@ internal sealed class TdsSession : IDisposable
     private string? _spn;
     private bool _sspiFailed;
     private bool _broken;
+    /// <summary>A named pipe that closed before the server answered PRELOGIN (see <see cref="ConnectOnce"/>).</summary>
+    private bool _pipeClosedBeforePreLogin;
     private Socket? _socket;
 
     // Session recovery: the state this session tracks (null when the server did not
@@ -249,6 +251,7 @@ internal sealed class TdsSession : IDisposable
     private static TdsSession ConnectOnce(SqlServerConnectionSettings settings, TdsSession? recoveringFrom)
     {
         string? spn = null;
+        bool pipeRetried = false;
         while (true)
         {
             var session = new TdsSession(settings, spn, recoveringFrom: recoveringFrom);
@@ -263,6 +266,14 @@ internal sealed class TdsSession : IDisposable
                 if (spn == null && session.LocalFallbackSpn() is string fallback)
                 {
                     spn = fallback;
+                    continue;
+                }
+                // A server can close a new named-pipe connection before answering PRELOGIN
+                // (LocalDB does, now and then, as other clients' connections close). Nothing
+                // has been sent but PRELOGIN, so try once more on a new connection.
+                if (session._pipeClosedBeforePreLogin && !pipeRetried)
+                {
+                    pipeRetried = true;
                     continue;
                 }
                 if (ex is AdbcException)
@@ -341,12 +352,21 @@ internal sealed class TdsSession : IDisposable
             EncryptMode.Strict => PreLoginEncryption.NotSupported,
             _ => PreLoginEncryption.On,
         };
-        Writer.BeginMessage(PacketType.PreLogin);
-        Writer.WriteBytes(Login7.BuildPreLogin(requested, fedAuth));
-        Writer.EndMessage();
+        byte[] response;
+        try
+        {
+            Writer.BeginMessage(PacketType.PreLogin);
+            Writer.WriteBytes(Login7.BuildPreLogin(requested, fedAuth));
+            Writer.EndMessage();
 
-        Reader.BeginMessage();
-        byte[] response = ReadMessageBytes();
+            Reader.BeginMessage();
+            response = ReadMessageBytes();
+        }
+        catch (Exception ex) when (_settings.PipeName != null && ex is TdsProtocolException or IOException)
+        {
+            _pipeClosedBeforePreLogin = true;
+            throw;
+        }
         (PreLoginEncryption serverEncryption, bool fedAuthRequired) = Login7.ParsePreLogin(response);
 
         if (_settings.Encrypt != EncryptMode.Strict)
