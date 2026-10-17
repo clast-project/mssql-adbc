@@ -192,15 +192,21 @@ public class CancellationTests
             }
         });
 
-        int completed = 0, cancelled = 0;
+        // Until both outcomes have been seen often enough (bounded in time): on a small machine the
+        // instant queries can all finish before the canceller lands in one. Every other query
+        // waits 2 ms on the server, a window the canceller hits; the instant ones race the end of
+        // the response.
+        int completed = 0, cancelled = 0, i = 0;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            for (int i = 0; i < 300; i++)
+            for (; i < 300 || (cancelled < 20 || completed < 20) && watch.Elapsed < TimeSpan.FromSeconds(20); i++)
             {
                 try
                 {
                     using AdbcStatement statement = connection.CreateStatement();
-                    statement.SqlQuery = $"SELECT {i} AS i, CAST(REPLICATE('a', {i}) AS varchar(max)) AS s";
+                    string wait = i % 2 == 1 ? "WAITFOR DELAY '00:00:00.002'; " : "";
+                    statement.SqlQuery = $"{wait}SELECT {i} AS i, CAST(REPLICATE('a', {i % 1000}) AS varchar(max)) AS s";
                     using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
                     int rows = 0;
                     while (stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
@@ -227,8 +233,8 @@ public class CancellationTests
             canceller.GetAwaiter().GetResult();
         }
 
-        Assert.Equal(300, completed + cancelled);
-        Assert.True(cancelled > 0, "The canceller never hit a query");
+        Assert.Equal(i, completed + cancelled);
+        Assert.True(cancelled > 0 && completed > 0, $"{completed} completed and {cancelled} cancelled in {i} queries");
         AssertUsable(connection);
     }
 
