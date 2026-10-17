@@ -109,5 +109,18 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
   one slow session from setting the pace (4 workers: std. dev. 225 → 18 ms).
   Falls back to a single stream inside a transaction; local temp tables are
   not visible to helper sessions.
+- Cancellation uses the TDS attention signal. `Cancel` on the connection or
+  statement (or a cancelled token on any async call or
+  `ReadNextRecordBatchAsync`) sends an attention while the response is being
+  read, or right after the request if it is still being sent; the reader
+  skips to the server's acknowledgment (a DONE with the ATTN bit, possibly in
+  a later message) and throws `AdbcStatusCode.Cancelled`, and the session
+  stays usable. A small lock orders the request state against `Cancel`, so
+  an attention that races the end of a response is still acknowledged
+  before the next request. Bulk-load messages cannot carry an attention, so
+  ingestion polls for cancellation and ends the message with the IGNORE bit.
+  Disposing an unfinished stream sends an attention instead of reading the
+  rest of the result, so abandoning a huge result takes milliseconds.
+  Parallel streams cancel every worker session.
 - Next lever: read-ahead to overlap TLS decryption with decoding when
   decoding cost becomes visible.

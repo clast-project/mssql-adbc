@@ -82,7 +82,7 @@ internal static class SqlServerBulkIngest
         PacketWriter writer = session.Writer;
         long rows = 0;
 
-        writer.BeginMessage(PacketType.BulkLoad);
+        session.BeginRequest(PacketType.BulkLoad);
         try
         {
             writer.WriteByte((byte)TokenType.ColMetadata);
@@ -96,6 +96,7 @@ internal static class SqlServerBulkIngest
             {
                 using (batch)
                 {
+                    ThrowIfCancelled(session);
                     foreach (ColumnEncoder encoder in encoders)
                     {
                         encoder.Bind(batch.Column(encoder.SourceIndex));
@@ -104,6 +105,10 @@ internal static class SqlServerBulkIngest
                     int length = batch.Length;
                     for (int row = 0; row < length; row++)
                     {
+                        if ((row & CancelCheckRows) == CancelCheckRows)
+                        {
+                            ThrowIfCancelled(session);
+                        }
                         writer.WriteByte((byte)TokenType.Row);
                         for (int c = 0; c < encoders.Length; c++)
                         {
@@ -122,22 +127,38 @@ internal static class SqlServerBulkIngest
         catch (Exception)
         {
             // Discard what has been sent of the message; the server ignores it.
-            writer.AbortMessage();
-            session.Reader.BeginMessage();
-            session.DrainResponse();
+            session.EndRequest(abort: true);
+            try
+            {
+                session.DrainResponse();
+            }
+            catch (AdbcException ex) when (ex.Status == AdbcStatusCode.Cancelled)
+            {
+                // Cancelled while aborting; report the original failure.
+            }
             throw;
         }
-        writer.EndMessage();
+        session.EndRequest();
 
-        session.Reader.BeginMessage();
         long reported = session.DrainResponse();
         return reported >= 0 ? reported : rows;
+    }
+
+    // A bulk-load message cannot be interrupted by an attention, so the sender
+    // polls for cancellation and abandons the message itself.
+    private const int CancelCheckRows = 4095;
+
+    private static void ThrowIfCancelled(TdsSession session)
+    {
+        if (session.IsCancelRequested)
+        {
+            throw TdsSession.CancelledException();
+        }
     }
 
     private static TdsColumn[] GetTableColumns(TdsSession session, IngestTarget target)
     {
         session.SendSqlBatch($"SELECT TOP 0 * FROM {target.QuotedName}");
-        session.Reader.BeginMessage();
         TdsColumn[]? columns = session.ReadUntilResultSet();
         if (columns == null)
         {
@@ -170,7 +191,6 @@ internal static class SqlServerBulkIngest
 
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         session.SendSqlBatch($"EXEC {procedure} {Literal(name)}");
-        session.Reader.BeginMessage();
         TdsColumn[]? columns = session.ReadUntilResultSet();
         if (columns == null)
         {

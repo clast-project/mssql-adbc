@@ -24,6 +24,7 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
     private readonly ConcurrentQueue<PartitionDescriptor> _work;
     private readonly Task[] _workers;
     private readonly TdsSession[] _sessions;
+    private readonly object _sync = new();
     private ExceptionDispatchInfo? _error;
     private int _running;
     private bool _disposed;
@@ -135,8 +136,13 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // As with a serial stream, a cancelled token cancels the query.
+        using CancellationTokenRegistration registration = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(static s => ((SqlServerParallelQueryStream)s!).Cancel(), this)
+            : default;
+
         ChannelReader<RecordBatch> reader = _channel.Reader;
-        while (_error == null && await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        while (_error == null && await reader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
         {
             if (_error == null && reader.TryRead(out RecordBatch? batch))
             {
@@ -146,8 +152,36 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
 
         // Finished or failed: release the sessions now rather than waiting for Dispose.
         Shutdown();
+        if (_error?.SourceException is AdbcException { Status: AdbcStatusCode.Cancelled } cancelled && cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancelled.Message, cancelled, cancellationToken);
+        }
         _error?.Throw();
         return null;
+    }
+
+    /// <summary>Cancels the query on every session; the reader then throws <see cref="AdbcStatusCode.Cancelled"/>.</summary>
+    public void Cancel()
+    {
+        lock (_sync)
+        {
+            if (_shutdown)
+            {
+                return;
+            }
+            Interlocked.CompareExchange(ref _error, ExceptionDispatchInfo.Capture(TdsSession.CancelledException()), null);
+            StopWorkers();
+        }
+    }
+
+    /// <summary>Stops the workers from taking more partitions and cuts short the ones in progress; the caller holds _sync.</summary>
+    private void StopWorkers()
+    {
+        _cancel.Cancel();
+        foreach (TdsSession session in _sessions)
+        {
+            session.Cancel();
+        }
     }
 
     public void Dispose()
@@ -158,14 +192,16 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
 
     private void Shutdown()
     {
-        if (_shutdown)
+        lock (_sync)
         {
-            return;
+            if (_shutdown)
+            {
+                return;
+            }
+            _shutdown = true;
+            StopWorkers();
         }
-        _shutdown = true;
 
-        // Stop the workers; a worker's partition stream drains whatever it has not read.
-        _cancel.Cancel();
         while (_channel.Reader.TryRead(out RecordBatch? batch))
         {
             batch.Dispose();

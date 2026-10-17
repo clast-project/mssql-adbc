@@ -164,6 +164,18 @@ public sealed class SqlServerConnection : AdbcConnection
         throw AdbcException.NotImplemented("GetTableTypes is not yet supported");
     }
 
+    /// <summary>
+    /// Cancels the operation in progress on this connection, including the
+    /// reading of a result stream; that operation throws
+    /// <see cref="AdbcStatusCode.Cancelled"/>. Does nothing when the
+    /// connection is idle.
+    /// </summary>
+    public override void Cancel()
+    {
+        _session.Cancel();
+        Volatile.Read(ref _parallelStream)?.Cancel();
+    }
+
     public override void Dispose()
     {
         lock (_helpers)

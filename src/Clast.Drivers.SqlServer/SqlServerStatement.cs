@@ -146,6 +146,12 @@ public sealed class SqlServerStatement : AdbcStatement
         return new UpdateResult(_connection.Session.ExecuteNonQuery(sql));
     }
 
+    /// <summary>
+    /// Cancels the operation in progress on the statement's connection, which
+    /// has one session: executing, ingesting, or reading a result stream.
+    /// </summary>
+    public override void Cancel() => _connection.Cancel();
+
     public override void Dispose()
     {
         _boundStream?.Dispose();

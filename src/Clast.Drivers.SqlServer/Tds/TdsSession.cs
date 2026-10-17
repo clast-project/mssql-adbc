@@ -23,6 +23,25 @@ internal sealed class TdsSession : IDisposable
     private NegotiateAuthentication? _sspi;
     private bool _broken;
 
+    // Request state. Cancel can be called on any thread, so changes to the
+    // state and the sending of an attention are serialized by _requestLock.
+    private readonly object _requestLock = new();
+    private RequestState _requestState;
+    private volatile bool _cancelPending;
+    private volatile bool _attentionSent;
+    private bool _attentionAcknowledged;
+
+    private enum RequestState
+    {
+        Idle,
+        Sending,
+        Receiving,
+    }
+
+    /// <summary>An ATTENTION message: a single packet with only a header.</summary>
+    private static readonly byte[] s_attentionPacket =
+        [(byte)PacketType.Attention, (byte)PacketStatus.EndOfMessage, 0, TdsConstants.HeaderLength, 0, 0, 1, 0];
+
     private TdsSession(SqlServerConnectionSettings settings)
     {
         _settings = settings;
@@ -59,6 +78,9 @@ internal sealed class TdsSession : IDisposable
     public List<SqlServerError> Messages { get; } = new();
 
     public bool IsBroken => _broken;
+
+    /// <summary>True when the current request has been cancelled and the response is being cut short.</summary>
+    public bool IsCancelRequested => _cancelPending || _attentionSent;
 
     /// <summary>The result stream currently reading from this session, if any.</summary>
     public object? ActiveStream { get; set; }
@@ -380,6 +402,10 @@ internal sealed class TdsSession : IDisposable
         status = (DoneStatus)Reader.ReadUInt16();
         command = Reader.ReadUInt16();
         rowCount = Reader.ReadInt64();
+        if ((status & DoneStatus.Attention) != 0)
+        {
+            _attentionAcknowledged = true;
+        }
     }
 
     /// <summary>DONE current-command value for SELECT, including variable assignment; its count is not an affected-row count.</summary>
@@ -399,8 +425,8 @@ internal sealed class TdsSession : IDisposable
     /// <summary>Marks the session unusable after a protocol failure.</summary>
     public void MarkBroken() => _broken = true;
 
-    /// <summary>Sends a SQL batch request.</summary>
-    public void SendSqlBatch(string sql)
+    /// <summary>Starts a request message; the caller writes its payload with <see cref="Writer"/>.</summary>
+    public void BeginRequest(PacketType type)
     {
         if (_broken)
         {
@@ -411,10 +437,118 @@ internal sealed class TdsSession : IDisposable
             throw new AdbcException("A previous result stream is still open; read it to the end or dispose it first", AdbcStatusCode.InvalidState);
         }
 
-        Writer.BeginMessage(PacketType.SqlBatch);
+        lock (_requestLock)
+        {
+            _requestState = RequestState.Sending;
+            _cancelPending = false;
+            _attentionSent = false;
+            _attentionAcknowledged = false;
+        }
+        Writer.BeginMessage(type);
+    }
+
+    /// <summary>
+    /// Sends the rest of the request message and starts reading the response.
+    /// With <paramref name="abort"/>, the message is ended with the IGNORE bit
+    /// instead, so the server discards it.
+    /// </summary>
+    public void EndRequest(bool abort = false)
+    {
+        if (abort)
+        {
+            Writer.AbortMessage();
+        }
+        else
+        {
+            Writer.EndMessage();
+        }
+
+        lock (_requestLock)
+        {
+            _requestState = RequestState.Receiving;
+            if (_cancelPending)
+            {
+                // Cancel arrived while the request was being sent.
+                SendAttention();
+            }
+        }
+        Reader.BeginMessage();
+    }
+
+    /// <summary>
+    /// Cancels the current request, if any; safe to call on any thread. While
+    /// the request is being sent, the attention follows it; while the response
+    /// is being read, it is sent at once. The reader then stops at the
+    /// server's acknowledgment and throws <see cref="AdbcStatusCode.Cancelled"/>.
+    /// </summary>
+    public void Cancel()
+    {
+        lock (_requestLock)
+        {
+            switch (_requestState)
+            {
+                case RequestState.Sending:
+                    _cancelPending = true;
+                    break;
+                case RequestState.Receiving when !_attentionSent:
+                    SendAttention();
+                    break;
+            }
+        }
+    }
+
+    /// <summary>Sends an attention; the caller holds _requestLock and the writer is between messages.</summary>
+    private void SendAttention()
+    {
+        if (TdsTrace.Enabled)
+        {
+            TdsTrace.Packet("->", s_attentionPacket[0], s_attentionPacket[1], s_attentionPacket.Length);
+        }
+        // Written beside the reader, which may be blocked in a receive; the transport and TLS allow one of each at a time.
+        Writer.Stream.Write(s_attentionPacket);
+        Writer.Stream.Flush();
+        _attentionSent = true;
+    }
+
+    public static AdbcException CancelledException() => new("The operation was cancelled", AdbcStatusCode.Cancelled);
+
+    /// <summary>
+    /// Completes a response whose last token has been read. If an attention is
+    /// outstanding, reads on to its acknowledgment, which may come in a later
+    /// message. Then throws for cancellation, or for the response's errors.
+    /// </summary>
+    private void CompleteResponse()
+    {
+        while (true)
+        {
+            lock (_requestLock)
+            {
+                if (!_attentionSent || _attentionAcknowledged)
+                {
+                    _requestState = RequestState.Idle;
+                    break;
+                }
+            }
+            Reader.BeginMessage();
+            SkipTokens(null);
+        }
+
+        if (_attentionSent)
+        {
+            // Errors caused by the cancellation itself, or that the caller no longer wants.
+            _errors.Clear();
+            throw CancelledException();
+        }
+        ThrowIfErrors();
+    }
+
+    /// <summary>Sends a SQL batch request and starts reading the response.</summary>
+    public void SendSqlBatch(string sql)
+    {
+        BeginRequest(PacketType.SqlBatch);
         WriteAllHeaders();
         Writer.WriteUtf16(sql);
-        Writer.EndMessage();
+        EndRequest();
     }
 
     /// <summary>
@@ -424,7 +558,6 @@ internal sealed class TdsSession : IDisposable
     public long ExecuteNonQuery(string sql)
     {
         SendSqlBatch(sql);
-        Reader.BeginMessage();
         return DrainResponse();
     }
 
@@ -472,7 +605,7 @@ internal sealed class TdsSession : IDisposable
             throw;
         }
 
-        ThrowIfErrors();
+        CompleteResponse();
         return null;
     }
 
@@ -482,6 +615,14 @@ internal sealed class TdsSession : IDisposable
     /// the result set the reader is positioned in, if any.
     /// </summary>
     public long DrainResponse(TdsColumn[]? columns = null)
+    {
+        long total = SkipTokens(columns);
+        CompleteResponse();
+        return total;
+    }
+
+    /// <summary>Reads to the end of the current message and returns its total row count, or -1.</summary>
+    private long SkipTokens(TdsColumn[]? columns)
     {
         long total = -1;
         byte[] nullBitmap = [];
@@ -536,8 +677,6 @@ internal sealed class TdsSession : IDisposable
             MarkBroken();
             throw;
         }
-
-        ThrowIfErrors();
         return total;
     }
 

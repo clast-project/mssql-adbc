@@ -101,7 +101,6 @@ internal static class SqlServerPartitions
     private static Schema DescribeResult(TdsSession session, string sql)
     {
         session.SendSqlBatch($"SET FMTONLY ON; {sql}; SET FMTONLY OFF;");
-        session.Reader.BeginMessage();
         TdsColumn[]? columns = session.ReadUntilResultSet();
         if (columns == null)
         {
@@ -118,7 +117,6 @@ internal static class SqlServerPartitions
     private static (long? Min, long? Max) GetRange(TdsSession session, string sql)
     {
         session.SendSqlBatch(sql);
-        session.Reader.BeginMessage();
         TdsColumn[] columns = session.ReadUntilResultSet()!;
         using var stream = new SqlServerQueryStream(session, columns);
         using RecordBatch batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult()!;

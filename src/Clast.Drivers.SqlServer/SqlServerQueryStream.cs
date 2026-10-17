@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
 using Apache.Arrow;
+using Apache.Arrow.Adbc;
 using Apache.Arrow.Ipc;
 using Clast.Drivers.SqlServer.Arrow;
 using Clast.Drivers.SqlServer.Tds;
@@ -44,7 +45,6 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
     public static IArrowArrayStream Execute(TdsSession session, string sql)
     {
         session.SendSqlBatch(sql);
-        session.Reader.BeginMessage();
 
         TdsColumn[]? columns = session.ReadUntilResultSet();
         if (columns == null)
@@ -72,13 +72,35 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
 
     public ValueTask<RecordBatch?> ReadNextRecordBatchAsync(CancellationToken cancellationToken = default)
     {
-        return new ValueTask<RecordBatch?>(ReadNextRecordBatch());
+        if (!cancellationToken.CanBeCanceled)
+        {
+            return new ValueTask<RecordBatch?>(ReadNextRecordBatch());
+        }
+
+        // The read blocks in the transport, so a cancelled token (even one
+        // cancelled already) cancels the query rather than just this call.
+        try
+        {
+            using (cancellationToken.Register(static s => ((TdsSession)s!).Cancel(), _session))
+            {
+                return new ValueTask<RecordBatch?>(ReadNextRecordBatch());
+            }
+        }
+        catch (AdbcException ex) when (ex.Status == AdbcStatusCode.Cancelled && cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(ex.Message, ex, cancellationToken);
+        }
     }
 
     private RecordBatch? ReadNextRecordBatch()
     {
-        if (_resultComplete)
+        if (_finished)
         {
+            return null;
+        }
+        if (_resultComplete || _session.IsCancelRequested)
+        {
+            // A cancelled response is skipped to the attention acknowledgment, which throws.
             Finish();
             return null;
         }
@@ -174,14 +196,18 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
 
         if (!_finished && !_session.IsBroken)
         {
-            // TODO: send an attention instead of reading the rest of a large result.
             _finished = true;
             _session.ActiveStream = null;
+            if (!_resultComplete)
+            {
+                // Stop the server sending rows that will not be read.
+                _session.Cancel();
+            }
             try
             {
                 _session.DrainResponse(_resultComplete ? null : _columns);
             }
-            catch (SqlServerException)
+            catch (AdbcException ex) when (ex is SqlServerException || ex.Status == AdbcStatusCode.Cancelled)
             {
                 // The caller abandoned the stream; errors in the unread part are not reported.
             }
