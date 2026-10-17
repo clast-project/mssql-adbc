@@ -20,6 +20,8 @@ internal sealed class PacketWriter
     private PacketType _type;
     private byte _packetId;
     private long _sentBytes;
+    private byte[] _scratch = new byte[64];
+    private bool _inScratch;
 
     public PacketWriter(Stream stream, int packetSize)
     {
@@ -70,6 +72,45 @@ internal sealed class PacketWriter
     {
         SendPacket(PacketStatus.EndOfMessage | PacketStatus.Ignore);
         _stream.Flush();
+    }
+
+    /// <summary>
+    /// Space for up to <paramref name="size"/> bytes, to fill and then commit
+    /// with <see cref="Advance"/>: in the packet when it fits there (one bounds
+    /// check for a whole value), otherwise in a scratch area that
+    /// <see cref="Advance"/> writes on across packets.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int size)
+    {
+        if (_buffer.Length - _position >= size)
+        {
+            return _buffer.AsSpan(_position, size);
+        }
+        return GetScratch(size);
+    }
+
+    private Span<byte> GetScratch(int size)
+    {
+        if (_scratch.Length < size)
+        {
+            _scratch = new byte[Math.Max(size, _scratch.Length * 2)];
+        }
+        _inScratch = true;
+        return _scratch.AsSpan(0, size);
+    }
+
+    /// <summary>Commits <paramref name="count"/> bytes written into the span from the last <see cref="GetSpan"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        if (!_inScratch)
+        {
+            _position += count;
+            return;
+        }
+        _inScratch = false;
+        WriteBytesSlow(_scratch.AsSpan(0, count));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

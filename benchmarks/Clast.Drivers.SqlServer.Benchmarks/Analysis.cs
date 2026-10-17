@@ -66,6 +66,11 @@ internal static class Analysis
         {
             Process.GetCurrentProcess().ProcessorAffinity = (IntPtr)mask;
         }
+        if (mode == "encode")
+        {
+            EncodeAnalysis.Run(iterations);
+            return;
+        }
         if (mode == "client")
         {
             ClientCpu.Run(iterations, args.Length > 3 ? args[3] : "read");

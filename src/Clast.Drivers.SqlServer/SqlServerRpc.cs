@@ -102,7 +102,7 @@ internal static class SqlServerRpc
     }
 
     /// <summary>The parameters for one bound record batch: their types, encoders and declaration.</summary>
-    private sealed class BatchParameters
+    private sealed class BatchParameters : IDisposable
     {
         public BatchParameters(RecordBatch batch, byte[] collation)
         {
@@ -131,6 +131,16 @@ internal static class SqlServerRpc
 
         /// <summary>The <c>@params</c> argument of sp_executesql, for example <c>@a INT, @b NVARCHAR(4000)</c>.</summary>
         public string Declaration { get; }
+
+        /// <summary>Releases the encoders' pins on the batch's buffers, then the batch.</summary>
+        public void Dispose()
+        {
+            foreach (ColumnEncoder? encoder in Encoders)
+            {
+                encoder?.Dispose();
+            }
+            Batch.Dispose();
+        }
     }
 
     /// <summary>The rows of the bound data, one batch at a time.</summary>
@@ -155,7 +165,7 @@ internal static class SqlServerRpc
         {
             while (_current == null || ++_row >= _current.Batch.Length)
             {
-                _current?.Batch.Dispose();
+                _current?.Dispose();
                 _current = null;
                 RecordBatch? batch = _data.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
                 if (batch == null)
@@ -170,7 +180,7 @@ internal static class SqlServerRpc
 
         public void Dispose()
         {
-            _current?.Batch.Dispose();
+            _current?.Dispose();
             _current = null;
             _data.Dispose();
         }

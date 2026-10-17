@@ -96,25 +96,36 @@ internal static class SqlServerBulkIngest
                 using (batch)
                 {
                     ThrowIfCancelled(session);
-                    foreach (ColumnEncoder encoder in encoders)
+                    try
                     {
-                        encoder.Bind(batch.Column(encoder.SourceIndex));
-                    }
+                        foreach (ColumnEncoder encoder in encoders)
+                        {
+                            encoder.Bind(batch.Column(encoder.SourceIndex));
+                        }
 
-                    int length = batch.Length;
-                    for (int row = 0; row < length; row++)
-                    {
-                        if ((row & CancelCheckRows) == CancelCheckRows)
+                        int length = batch.Length;
+                        for (int row = 0; row < length; row++)
                         {
-                            ThrowIfCancelled(session);
+                            if ((row & CancelCheckRows) == CancelCheckRows)
+                            {
+                                ThrowIfCancelled(session);
+                            }
+                            writer.WriteByte((byte)TokenType.Row);
+                            for (int c = 0; c < encoders.Length; c++)
+                            {
+                                encoders[c].Write(writer, row);
+                            }
                         }
-                        writer.WriteByte((byte)TokenType.Row);
-                        for (int c = 0; c < encoders.Length; c++)
+                        rows += length;
+                    }
+                    finally
+                    {
+                        // The encoders pin the batch's buffers; release them before it is disposed.
+                        foreach (ColumnEncoder encoder in encoders)
                         {
-                            encoders[c].Write(writer, row);
+                            encoder.Release();
                         }
                     }
-                    rows += length;
                 }
             }
 

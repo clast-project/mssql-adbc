@@ -70,6 +70,8 @@ run:
   `sys.dm_exec_requests`.
 
 `--analyze profile N full|login` is a steady loop for `dotnet-trace`.
+`--analyze encode [iterations]` measures bulk-load encoding alone, without a
+TLS, socket or server cost (see Ingest encoders).
 
 Read cases include "drain" (Clast reads the token stream without decoding
 values) and "SqlClient skip" (`Read()` without getting values). These are
@@ -124,6 +126,35 @@ Times are in ms.
 Times are in ms. Minimums were within 10% of medians. Packet size does not
 matter here. Both drivers spend about 95% of wall time waiting for the
 server's CPU, so a faster client can't help.
+
+### Ingest encoders
+
+`--analyze encode [iterations]` measures bulk-load encoding alone: the
+table's batches, through the encoders the driver uses for it, into a packet
+writer over `Stream.Null`. Encoding was most of ingest's client CPU, 797
+Mcycles (259 ms) per million rows against about 330 ms of client CPU for the
+whole ingest. Each value went through two or three `ArrowBuffer` spans
+(`Values`, `IsNull`, `GetBytes`), each a virtual
+`MemoryManager<byte>.GetSpan` call for Arrow's native buffers. On top of
+that came a delegate (integers), type tests (floats, temporal types), a
+`stackalloc`, and an Int128 division (decimals).
+
+The encoders now pin each column's buffers once per batch, read values and
+the validity bitmap through pointers, and write each value with one bounds
+check (`PacketWriter.GetSpan`/`Advance`). Integers are generic over the
+source type, sources are resolved at `Bind`, the decimal limit is computed
+once, and nvarchar is transcoded straight into the packet.
+
+| per million rows (server CPU 12, client CPUs 0-3) | before | after |
+|---|---|---|
+| Encoding, 17 columns | 797 Mcycles, 259 ms | 238 Mcycles, 76 ms |
+| Fixed-width value (int, float, bit) | 7-11 ns | 3.2-3.8 ns |
+| decimal / datetime2 / nvarchar value | 11 / 21 / 22 ns | 5.1 / 6.2 / 9.3 ns |
+| Ingest, client CPU, managed | 328 ms | 188 ms |
+| Ingest, client CPU, NativeAOT from Python | 375 ms | 211 ms |
+
+Wall time is unchanged (about 2.4 s, server-bound). What remains of the
+client CPU is mostly TLS and the socket, not encoding.
 
 ## BenchmarkDotNet, placement-controlled
 

@@ -107,6 +107,27 @@ public class IngestTests
         return new RecordBatch(new Schema(fields, null), arrays, 4);
     }
 
+    /// <summary>A sliced batch: every column has an offset into its buffers (and a struct column's children are not sliced with it).</summary>
+    [SkippableFact]
+    public void IngestsASlicedBatch()
+    {
+        using AdbcConnection connection = Connect();
+        RecordBatch sliced = PrototypeBatch().Slice(1, 3);
+        Assert.Equal(3, Ingest(connection, "clast_sliced", BulkIngestMode.Create, sliced));
+
+        List<object?[]> rows = QueryTests.ReadAdbc(connection, "SELECT * FROM #clast_sliced", out Schema schema, out _);
+        Assert.Equal(3, rows.Count);
+        for (int c = 0; c < sliced.ColumnCount; c++)
+        {
+            for (int r = 0; r < 3; r++)
+            {
+                object? expected = QueryTests.ArrowValue(sliced.Column(c), r);
+                object? actual = rows[r][c];
+                Assert.True(Equals(expected, actual), $"{schema.FieldsList[c].Name} row {r}: expected <{expected}>, actual <{actual}>");
+            }
+        }
+    }
+
     [SkippableFact]
     public void CreateRoundTripsPrototypeTypes()
     {
