@@ -57,6 +57,13 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>Retries after a login fails with a transient error (see <see cref="TdsSession.IsTransient"/>).</summary>
     public int ConnectRetryCount { get; private set; }
     public TimeSpan ConnectRetryInterval { get; private set; } = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// Read-only application intent (<c>adbc.connection.readonly</c>), sent with
+    /// the login: availability-group listeners and Azure SQL read scale-out route
+    /// such a connection to a readable secondary. A server without replicas
+    /// ignores it, and writes still succeed there.
+    /// </summary>
+    public bool ReadOnlyIntent { get; private set; }
     /// <summary>Whether to request session recovery, and so reconnect a session whose connection broke while idle.</summary>
     public bool SessionRecovery { get; private set; } = true;
     public int BatchRows { get; private set; } = 65536;
@@ -137,6 +144,15 @@ internal sealed class SqlServerConnectionSettings
         else
         {
             settings.ConnectRetryCount = DefaultConnectRetryCount(settings.Host);
+        }
+        if (options.TryGetValue(AdbcOptions.Connection.ReadOnly, out string? readOnly))
+        {
+            settings.ReadOnlyIntent = readOnly switch
+            {
+                AdbcOptions.Enabled => true,
+                AdbcOptions.Disabled => false,
+                _ => throw InvalidOption(AdbcOptions.Connection.ReadOnly, readOnly),
+            };
         }
         if (options.TryGetValue(SqlServerParameters.SessionRecovery, out string? recovery))
         {

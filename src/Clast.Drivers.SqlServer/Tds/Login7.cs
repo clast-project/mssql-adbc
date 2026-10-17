@@ -225,8 +225,8 @@ internal static class Login7
         span[24] = 0xE0;
         // OptionFlags2: INIT_LANG_FATAL | ODBC_ON | INTEGRATED_SECURITY.
         span[25] = (byte)(0x01 | 0x02 | (useSspi ? 0x80 : 0));
-        // TypeFlags: SQL_DFLT.
-        span[26] = 0;
+        // TypeFlags: SQL_DFLT, and fReadOnlyIntent (ApplicationIntent=ReadOnly).
+        span[26] = settings.ReadOnlyIntent ? (byte)0x20 : (byte)0;
         // OptionFlags3: fExtension.
         span[27] = 0x10;
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(28), 0); // client time zone (unused)

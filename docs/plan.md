@@ -282,11 +282,12 @@ those Arrow types.
 | GetObjects | databases → schemas → tables/views → columns (XDBC/ODBC attributes) and constraints (PK, UNIQUE, FK with referenced columns, CHECK), from each database's catalog views, one batch per database |
 | Transactions | autocommit off = `IMPLICIT_TRANSACTIONS ON`; Commit/Rollback; isolation levels incl. snapshot (helper sessions follow) |
 | Options | current catalog (USE), current schema (read-only), `GetOption` on database, connection and statement |
+| Read-only | `adbc.connection.readonly` = read-only application intent (LOGIN7 fReadOnlyIntent, as `ApplicationIntent=ReadOnly`), set before connecting: AG listeners and Azure SQL read scale-out route to a readable secondary. Not enforced by a server without replicas, since SQL Server has no read-only session mode |
 | Bind / Prepare | bound rows are `sp_executesql` RPC calls with typed parameters (`@name` per field, `@p1`… if unnamed). ExecuteUpdate batches up to 1000 calls (≤1 MB) per message; ExecuteQuery runs a call per row and concatenates the result sets. Prepare only validates |
 | ExecuteSchema | `SET FMTONLY ON`, with parameters declared from the bound schema or from `sp_describe_undeclared_parameters` |
 | GetParameterSchema | `sp_describe_undeclared_parameters` |
 | Statistics | approximate: table row counts (`sys.partitions`) and column distinct/null counts from each column's statistics histogram (`sys.dm_db_stats_histogram`); exact: row counts with `COUNT_BIG(*)`. No driver-specific statistics |
-| Not done | Substrait, read-only connections, incremental execution |
+| Not done | Substrait, incremental execution |
 
 ## Findings (M4, local SQL Server 2025, 1M rows × 17 columns)
 

@@ -30,7 +30,7 @@ internal sealed class FakeTdsServer : IDisposable
     /// <summary>What a client's LOGIN7 carried.</summary>
     public sealed record Login(
         bool PreLoginFedAuthRequired, string UserName, bool IntegratedSecurity, string ServerName, string Database,
-        byte FedAuthLibrary, bool FedAuthEcho, string? Token, byte Workflow, IReadOnlyList<byte> Features);
+        byte FedAuthLibrary, bool FedAuthEcho, string? Token, byte Workflow, IReadOnlyList<byte> Features, byte TypeFlags);
 
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly Func<Login, int, byte[]> _respond;
@@ -365,7 +365,7 @@ internal sealed class FakeTdsServer : IDisposable
             }
             i += 5 + length;
         }
-        return new Login(preLoginFedAuthRequired, userName, integrated, serverName, database, library, echo, token, workflow, ids);
+        return new Login(preLoginFedAuthRequired, userName, integrated, serverName, database, library, echo, token, workflow, ids, login[26]);
     }
 
     private static byte[]? PreLoginOption(byte[] payload, byte option)

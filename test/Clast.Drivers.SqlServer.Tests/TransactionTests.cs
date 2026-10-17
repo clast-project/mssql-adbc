@@ -220,12 +220,10 @@ public sealed class TransactionTests : IDisposable
     }
 
     [SkippableFact]
-    public void ReadOnlyIsNotSupported()
+    public void InvalidOptionValuesAreRefused()
     {
-        AdbcConnection connection = Connect();
-        Assert.Equal("false", connection.GetOption(AdbcOptions.Connection.ReadOnly));
-        connection.SetOption(AdbcOptions.Connection.ReadOnly, "false");
-        Assert.Equal(AdbcStatusCode.NotImplemented, Assert.Throws<AdbcException>(() => connection.SetOption(AdbcOptions.Connection.ReadOnly, "true")).Status);
+        using AdbcConnection connection = Connect();
         Assert.Equal(AdbcStatusCode.InvalidArgument, Assert.Throws<AdbcException>(() => connection.SetOption(AdbcOptions.Connection.Autocommit, "maybe")).Status);
+        Assert.Equal(AdbcStatusCode.InvalidArgument, Assert.Throws<AdbcException>(() => connection.SetOption(AdbcOptions.Connection.ReadOnly, "maybe")).Status);
     }
 }

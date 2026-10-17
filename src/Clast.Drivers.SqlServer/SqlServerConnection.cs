@@ -25,7 +25,8 @@ public sealed class SqlServerConnection : AdbcConnection
         try
         {
             // Standard connection options may also be given when connecting.
-            foreach (string key in (string[])[AdbcOptions.Connection.Autocommit, AdbcOptions.Connection.IsolationLevel, AdbcOptions.Connection.ReadOnly])
+            // (adbc.connection.readonly is part of the login: SqlServerConnectionSettings reads it.)
+            foreach (string key in (string[])[AdbcOptions.Connection.Autocommit, AdbcOptions.Connection.IsolationLevel])
             {
                 if (options.TryGetValue(key, out string? value))
                 {
@@ -353,15 +354,24 @@ public sealed class SqlServerConnection : AdbcConnection
         _session.ExecuteNonQuery(sql);
     }
 
-    /// <summary>SQL Server has no read-only session mode; only false is accepted.</summary>
+    /// <summary>
+    /// Read-only application intent, as SqlClient's <c>ApplicationIntent=ReadOnly</c>.
+    /// It travels with the login, so set it before connecting: on the database,
+    /// or in Connect's options. Availability-group listeners and Azure SQL read
+    /// scale-out then route the connection to a readable secondary, where writes
+    /// fail. SQL Server has no read-only session mode, so a server without
+    /// replicas still accepts writes.
+    /// </summary>
     public override bool ReadOnly
     {
-        get => false;
+        get => _session.ConnectSettings.ReadOnlyIntent;
         set
         {
-            if (value)
+            if (value != ReadOnly)
             {
-                throw AdbcException.NotImplemented("SQL Server does not support read-only connections");
+                throw new AdbcException(
+                    $"{AdbcOptions.Connection.ReadOnly} is sent with the login: set it on the database, or in Connect's options, before connecting",
+                    AdbcStatusCode.InvalidState);
             }
         }
     }
