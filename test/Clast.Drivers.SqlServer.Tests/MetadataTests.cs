@@ -17,7 +17,7 @@ namespace Clast.Drivers.SqlServer.Tests;
 [Collection(CatalogCollection.Name)]
 public sealed class MetadataTests : IDisposable
 {
-    private readonly string _prefix = "clast_meta_" + Guid.NewGuid().ToString("N")[..8] + "_";
+    private readonly string _prefix = "clast_meta_" + Guid.NewGuid().ToString("N").Substring(0, 8) + "_";
     private readonly AdbcConnection _connection;
 
     public MetadataTests()

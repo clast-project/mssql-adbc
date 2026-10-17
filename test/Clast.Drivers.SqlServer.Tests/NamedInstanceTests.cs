@@ -233,7 +233,7 @@ public sealed class NamedInstanceTests : IDisposable
                 if (Respond(request.Buffer) is string reply)
                 {
                     byte[] packet = Encode(reply);
-                    await _udp.SendAsync(packet, request.RemoteEndPoint);
+                    await _udp.SendAsync(packet, packet.Length, request.RemoteEndPoint);
                 }
             }
         }

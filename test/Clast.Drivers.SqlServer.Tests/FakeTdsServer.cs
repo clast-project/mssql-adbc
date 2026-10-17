@@ -180,7 +180,11 @@ internal sealed class FakeTdsServer : IDisposable
         var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using X509Certificate2 ephemeral = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
         // SChannel needs a key it can find, not an ephemeral one.
+#if NET
         return X509CertificateLoader.LoadPkcs12(ephemeral.Export(X509ContentType.Pfx), null);
+#else
+        return new X509Certificate2(ephemeral.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.Exportable);
+#endif
     }
 
     private async Task Accept()
@@ -219,7 +223,7 @@ internal sealed class FakeTdsServer : IDisposable
     {
         (byte _, byte[] preLogin) = ReadMessage(network);
         PreLogins.Enqueue(preLogin);
-        bool fedAuthRequired = PreLoginOption(preLogin, 0x06) is [1, ..];
+        bool fedAuthRequired = PreLoginOption(preLogin, 0x06) is { Length: > 0 } fedAuth && fedAuth[0] == 1;
 
         // PRELOGIN response: VERSION, ENCRYPTION (ON, or NOT_SUP), FEDAUTHREQUIRED = 1.
         byte[] response =
@@ -247,13 +251,17 @@ internal sealed class FakeTdsServer : IDisposable
         using var ssl = new SslStream(tunnel, leaveInnerStreamOpen: true);
         // TLS 1.2, as SQL Server uses inside PRELOGIN (TDS 7.x); TLS 1.3 sends a post-handshake
         // ticket that would still be wrapped in a PRELOGIN packet after the client stopped unwrapping.
+#pragma warning disable SYSLIB0039
+#if NET
         ssl.AuthenticateAsServer(new SslServerAuthenticationOptions
         {
             ServerCertificate = _certificate,
-#pragma warning disable SYSLIB0039
             EnabledSslProtocols = SslProtocols.Tls12,
-#pragma warning restore SYSLIB0039
         });
+#else
+        ssl.AuthenticateAsServer(_certificate, clientCertificateRequired: false, SslProtocols.Tls12, checkCertificateRevocation: false);
+#endif
+#pragma warning restore SYSLIB0039
         tunnel.Encapsulate = false;
 
         (byte type, byte[] login7) = ReadMessage(ssl);

@@ -428,7 +428,7 @@ internal sealed class VariableDecoder : ColumnDecoder
         {
             _chars = new char[Math.Max(charCount, _chars.Length * 2)];
         }
-        int decoded = _codePage.GetChars(bytes, _chars);
+        int decoded = _codePage!.GetChars(bytes, _chars);
         ReadOnlySpan<char> chars = _chars.AsSpan(0, decoded);
         Span<byte> destination = _data.GetSpan(decoded * 3);
         Utf8.FromUtf16(chars, destination, out _, out int written, replaceInvalidSequences: true);
@@ -733,6 +733,7 @@ internal readonly struct TdsCollation
 
     static TdsCollation()
     {
+        // .NET Core has only the Unicode and Latin-1 code pages built in (on .NET Framework, this adds nothing).
         System.Text.Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 

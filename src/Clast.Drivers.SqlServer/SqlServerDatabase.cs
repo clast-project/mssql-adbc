@@ -14,7 +14,7 @@ public sealed class SqlServerDatabase : AdbcDatabase
 
     internal SqlServerDatabase(IReadOnlyDictionary<string, string> options)
     {
-        _options = new Dictionary<string, string>(options);
+        _options = options.ToDictionary(p => p.Key, p => p.Value);
     }
 
     private SqlServerConnectionSettings? _discoverySettings;

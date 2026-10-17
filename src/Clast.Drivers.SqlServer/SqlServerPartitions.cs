@@ -63,10 +63,10 @@ internal static class SqlServerPartitions
             }
             Int128 high = low + width; // exclusive
             var where = new StringBuilder();
-            where.Append(CultureInfo.InvariantCulture, $"q.{quoted} >= {low}");
+            where.Append(FormattableString.Invariant($"q.{quoted} >= {low}"));
             if (high <= max.Value)
             {
-                where.Append(CultureInfo.InvariantCulture, $" AND q.{quoted} < {high}");
+                where.Append(FormattableString.Invariant($" AND q.{quoted} < {high}"));
             }
             string partition = $"SELECT * FROM ({sql}) AS q WHERE {where}";
             if (i == 0 && field.IsNullable)

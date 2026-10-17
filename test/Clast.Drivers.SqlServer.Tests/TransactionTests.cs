@@ -12,7 +12,7 @@ namespace Clast.Drivers.SqlServer.Tests;
 /// <summary>Autocommit, Commit/Rollback, isolation level and the other standard connection options.</summary>
 public sealed class TransactionTests : IDisposable
 {
-    private readonly string _table = "tempdb.dbo.clast_tx_" + Guid.NewGuid().ToString("N")[..8];
+    private readonly string _table = "tempdb.dbo.clast_tx_" + Guid.NewGuid().ToString("N").Substring(0, 8);
     private readonly List<AdbcConnection> _connections = new();
 
     public TransactionTests()

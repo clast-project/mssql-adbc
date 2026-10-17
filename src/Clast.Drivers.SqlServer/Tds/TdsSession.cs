@@ -6,6 +6,9 @@ using System.IO.Pipes;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+#if !NET
+using System.Security.Authentication;
+#endif
 using Apache.Arrow.Adbc;
 
 namespace Clast.Drivers.SqlServer.Tds;
@@ -20,7 +23,7 @@ internal sealed class TdsSession : IDisposable
     private readonly List<SqlServerError> _errors = new();
     private Stream _transport = Stream.Null;
     private SslStream? _ssl;
-    private NegotiateAuthentication? _sspi;
+    private IntegratedAuthentication? _sspi;
     private readonly string? _spnOverride;
     private string? _spn;
     private bool _sspiFailed;
@@ -296,8 +299,8 @@ internal sealed class TdsSession : IDisposable
 
         if (_settings.Encrypt == EncryptMode.Strict)
         {
-            _ssl = new SslStream(_transport, leaveInnerStreamOpen: true);
-            _ssl.AuthenticateAsClient(CreateTlsOptions(strict: true));
+            _ssl = CreateTlsStream(_transport);
+            AuthenticateTls(_ssl, strict: true);
             stream = _ssl;
         }
 
@@ -339,8 +342,8 @@ internal sealed class TdsSession : IDisposable
                 case PreLoginEncryption.On:
                 case PreLoginEncryption.Required:
                     var tunnel = new PreLoginTlsStream(_transport);
-                    _ssl = new SslStream(tunnel, leaveInnerStreamOpen: true);
-                    _ssl.AuthenticateAsClient(CreateTlsOptions(strict: false));
+                    _ssl = CreateTlsStream(tunnel);
+                    AuthenticateTls(_ssl, strict: false);
                     tunnel.Encapsulate = false;
                     SetStream(_ssl);
                     break;
@@ -364,17 +367,13 @@ internal sealed class TdsSession : IDisposable
         ReadOnlySpan<byte> sspiToken = default;
         if (_settings.IntegratedSecurity && !fedAuth)
         {
-            _sspi = new NegotiateAuthentication(new NegotiateAuthenticationClientOptions
-            {
-                Package = "Negotiate",
-                TargetName = GetServicePrincipalName(),
-            });
+            _sspi = new IntegratedAuthentication(GetServicePrincipalName());
             sspiToken = NextSspiToken(default);
         }
 
         uint version = _settings.Encrypt == EncryptMode.Strict ? TdsConstants.Tds80Version : TdsConstants.Tds74Version;
         Writer.BeginMessage(PacketType.Login7);
-        Writer.WriteBytes(Login7.Build(_settings, version, sspiToken, fedAuthFeature));
+        Writer.WriteBytes(Login7.Build(_settings, version, sspiToken, fedAuthFeature, encryptedAfterLogin: _ssl != null && !loginOnlyEncryption));
         Writer.EndMessage();
 
         if (loginOnlyEncryption)
@@ -447,6 +446,58 @@ internal sealed class TdsSession : IDisposable
         return new NetworkStream(socket, ownsSocket: true);
     }
 
+    private SslStream CreateTlsStream(Stream inner) =>
+#if NET
+        new(inner, leaveInnerStreamOpen: true);
+#else
+        new(inner, leaveInnerStreamOpen: true, (_, _, _, errors) =>
+        {
+            _tlsPolicyErrors = errors;
+            return errors == SslPolicyErrors.None || _settings.TrustServerCertificate;
+        });
+
+    /// <summary>Why the server's certificate was rejected; .NET Framework's exception does not say.</summary>
+    private SslPolicyErrors _tlsPolicyErrors;
+
+    /// <summary>TLS 1.3, which netstandard2.0's <see cref="SslProtocols"/> does not name.</summary>
+    private const SslProtocols Tls13 = (SslProtocols)12288;
+#endif
+
+    /// <summary>
+    /// The TLS handshake, validating the certificate against the server's name.
+    /// netstandard2.0's SslStream has no options: there the OS chooses the
+    /// protocol versions, and strict connections offer no ALPN protocol.
+    /// </summary>
+    private void AuthenticateTls(SslStream ssl, bool strict)
+    {
+#if NET
+        ssl.AuthenticateAsClient(CreateTlsOptions(strict));
+#else
+        try
+        {
+            if (strict)
+            {
+                // The system default stops at TLS 1.2 on .NET Framework; TDS 8 can use 1.3.
+                try
+                {
+                    ssl.AuthenticateAsClient(_settings.Host, null, SslProtocols.Tls12 | Tls13, checkCertificateRevocation: false);
+                    return;
+                }
+                catch (ArgumentException)
+                {
+                    // A runtime that does not know TLS 1.3 (before .NET Framework 4.8).
+                }
+            }
+            ssl.AuthenticateAsClient(_settings.Host, null, SslProtocols.None, checkCertificateRevocation: false);
+        }
+        catch (AuthenticationException ex) when (_tlsPolicyErrors != SslPolicyErrors.None)
+        {
+            throw new AuthenticationException($"{ex.Message} ({_tlsPolicyErrors})", ex);
+        }
+#endif
+    }
+
+#if NET
     private SslClientAuthenticationOptions CreateTlsOptions(bool strict)
     {
         var options = new SslClientAuthenticationOptions
@@ -467,6 +518,7 @@ internal sealed class TdsSession : IDisposable
         }
         return options;
     }
+#endif
 
     /// <summary><c>MSSQLSvc/fqdn:port</c> (<c>MSSQLSvc/fqdn</c> over a named pipe), as SQL Server registers it.</summary>
     private string GetServicePrincipalName()
@@ -491,8 +543,8 @@ internal sealed class TdsSession : IDisposable
 
     private byte[] NextSspiToken(ReadOnlySpan<byte> incoming)
     {
-        byte[]? outgoing = _sspi!.GetOutgoingBlob(incoming, out NegotiateAuthenticationStatusCode status);
-        if (status != NegotiateAuthenticationStatusCode.Completed && status != NegotiateAuthenticationStatusCode.ContinueNeeded)
+        byte[]? outgoing = _sspi!.Next(incoming, out string? status);
+        if (outgoing == null)
         {
             _sspiFailed = true;
             // Elsewhere than Windows, Negotiate is GSSAPI: Kerberos needs a ticket (kinit), and NTLM
@@ -504,7 +556,7 @@ internal sealed class TdsSession : IDisposable
                 $"Integrated authentication failed ({status}) for service principal name '{_spn}'. If the server is registered under another name, set {SqlServerParameters.ServerSpn}.{unix}",
                 AdbcStatusCode.Unauthenticated);
         }
-        return outgoing ?? [];
+        return outgoing;
     }
 
     private void SetStream(Stream stream)

@@ -271,7 +271,7 @@ internal sealed class VariantDecoder : ColumnDecoder
         int size = Unsafe.SizeOf<T>();
         Span<byte> span = _values.GetSpan(1 + size);
         span[0] = (byte)((int)type << 2);
-        MemoryMarshal.Write(span.Slice(1), in value);
+        Unsafe.WriteUnaligned(ref span[1], value);
         _values.Advance(1 + size);
     }
 

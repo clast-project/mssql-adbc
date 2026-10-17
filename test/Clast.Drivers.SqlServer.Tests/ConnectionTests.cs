@@ -49,7 +49,7 @@ public class ConnectionTests
     {
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348) || OperatingSystem.IsLinux())
         {
-            Assert.Equal(System.Security.Authentication.SslProtocols.Tls13, session.TlsProtocol);
+            Assert.Equal(TestCompat.Tls13, session.TlsProtocol);
         }
     }
 

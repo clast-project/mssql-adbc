@@ -176,7 +176,7 @@ public sealed class RoutingTests
                 if (p[i] == 0x05)
                 {
                     Assert.Equal(36, (p[i + 3] << 8) | p[i + 4]);
-                    return new Guid(p.AsSpan((p[i + 1] << 8) | p[i + 2], 16));
+                    return new Guid(p.AsSpan((p[i + 1] << 8) | p[i + 2], 16).ToArray());
                 }
             }
             throw new Xunit.Sdk.XunitException("No TRACEID option");

@@ -1,9 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!-- Multi-targeted: clear the single TargetFramework from Directory.Build.props. -->
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
     <AssemblyName>Clast.Drivers.SqlServer</AssemblyName>
     <RootNamespace>Clast.Drivers.SqlServer</RootNamespace>
-    <IsAotCompatible>true</IsAotCompatible>
+    <IsAotCompatible Condition="'$(TargetFramework)' != 'netstandard2.0'">true</IsAotCompatible>
     <Version>0.0.0-dev</Version>
     <Description>ADBC driver for Microsoft SQL Server and other TDS-compatible databases.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -17,6 +20,12 @@
   <ItemGroup>
     <PackageReference Include="Apache.Arrow" />
     <ProjectReference Include="$(AdbcProject)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="Microsoft.Win32.Registry" />
+    <PackageReference Include="System.Text.Encoding.CodePages" />
+    <PackageReference Include="System.Threading.Channels" />
   </ItemGroup>
 
 </Project>

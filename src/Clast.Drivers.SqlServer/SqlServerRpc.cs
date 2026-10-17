@@ -29,7 +29,7 @@ internal static class SqlServerRpc
     /// <summary>Parameter name for a field: its name without a leading @, or p1, p2, ... when unnamed.</summary>
     public static string ParameterName(Field field, int index)
     {
-        string name = field.Name.StartsWith('@') ? field.Name[1..] : field.Name;
+        string name = field.Name.StartsWith('@') ? field.Name.Substring(1) : field.Name;
         return name.Length > 0 ? name : "p" + (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 

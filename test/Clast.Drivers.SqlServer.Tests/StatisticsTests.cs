@@ -12,7 +12,7 @@ namespace Clast.Drivers.SqlServer.Tests;
 [Collection(CatalogCollection.Name)]
 public sealed class StatisticsTests : IDisposable
 {
-    private readonly string _table = "clast_stats_" + Guid.NewGuid().ToString("N")[..8];
+    private readonly string _table = "clast_stats_" + Guid.NewGuid().ToString("N").Substring(0, 8);
     private readonly AdbcConnection _connection;
 
     public StatisticsTests()

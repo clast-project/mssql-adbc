@@ -75,7 +75,11 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
   standard ADBC keys.
 - ADBC C# referenced from a local checkout via `AdbcCSharpRoot` in
   `Directory.Build.props`; expected to become a submodule.
-- net10.0 only for now; netstandard2.0 later, without shaping today's design.
+- net10.0 first, plus netstandard2.0 for .NET Framework and other hosts. The
+  netstandard2.0 build fills in what it lacks (`Compat/`: 128-bit integers,
+  span overloads of Stream and Encoding, UTF-8 transcoding, and other newer
+  BCL members, mostly as C# 14 extension members so call sites read the
+  same) and calls Windows SSPI directly for integrated authentication.
 
 ## Server strings (`adbc.mssql.server`)
 

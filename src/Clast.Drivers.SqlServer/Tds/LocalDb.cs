@@ -24,10 +24,10 @@ internal static unsafe class LocalDb
     private static bool s_loaded;
 
     // HRESULT LocalDBStartInstance(PCWSTR pInstanceName, DWORD dwFlags, LPWSTR wszSqlConnection, LPDWORD lpcchSqlConnection)
-    private static delegate* unmanaged<char*, int, char*, int*, int> s_startInstance;
+    private static delegate* unmanaged[Stdcall]<char*, int, char*, int*, int> s_startInstance;
 
     // HRESULT LocalDBFormatMessage(HRESULT hrLocalDB, DWORD dwFlags, DWORD dwLanguageId, LPWSTR wszMessage, LPDWORD lpcchMessage)
-    private static delegate* unmanaged<int, int, int, char*, int*, int> s_formatMessage;
+    private static delegate* unmanaged[Stdcall]<int, int, int, char*, int*, int> s_formatMessage;
 
     /// <summary>
     /// Starts <paramref name="instance"/> if it is not running (which can take
@@ -86,10 +86,10 @@ internal static unsafe class LocalDb
             {
                 throw new AdbcException($"'{path}' does not export LocalDBStartInstance", AdbcStatusCode.IOError);
             }
-            s_startInstance = (delegate* unmanaged<char*, int, char*, int*, int>)start;
+            s_startInstance = (delegate* unmanaged[Stdcall]<char*, int, char*, int*, int>)start;
             if (NativeLibrary.TryGetExport(library, "LocalDBFormatMessage", out IntPtr format))
             {
-                s_formatMessage = (delegate* unmanaged<int, int, int, char*, int*, int>)format;
+                s_formatMessage = (delegate* unmanaged[Stdcall]<int, int, int, char*, int*, int>)format;
             }
             s_loaded = true;
         }

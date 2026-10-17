@@ -96,7 +96,7 @@ public sealed class LocalDbTests
     [SkippableFact]
     public void UnknownInstanceReportsLocalDbsMessage()
     {
-        var ex = Assert.Throws<AdbcException>(() => Connect(@"(localdb)\NoSuchInstance" + Guid.NewGuid().ToString("N")[..8]));
+        var ex = Assert.Throws<AdbcException>(() => Connect(@"(localdb)\NoSuchInstance" + Guid.NewGuid().ToString("N").Substring(0, 8)));
         Assert.Equal(AdbcStatusCode.IOError, ex.Status);
         Assert.Contains("Could not start LocalDB instance", ex.Message);
         Assert.DoesNotContain("HRESULT", ex.Message); // LocalDB's own text, not just a code

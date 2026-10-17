@@ -34,6 +34,19 @@ no server on all three systems.
 - TLS uses SChannel on Windows, OpenSSL on Linux and Apple's TLS stack on
   macOS; the latter may cap strict (TDS 8) connections at TLS 1.2.
 
+A netstandard2.0 build serves other hosts, chiefly .NET Framework 4.7.2 and
+later. On Windows the test project also targets net472, so the tests run
+against that build as well. Compared with the .NET 10 build:
+
+- Integrated authentication needs Windows (it calls SSPI directly).
+- Strict (TDS 8) connections offer no ALPN protocol, and get TLS 1.3 only
+  where the runtime and Windows support it (.NET Framework 4.8 on Windows 11
+  or Server 2022); other TLS versions are the system defaults.
+- Under TLS the packet size is at most 16384 bytes: .NET Framework splits
+  larger packets into TLS records that SQL Server refuses.
+- It is written for correctness rather than speed: newer .NET's span-based
+  APIs are filled in over arrays, and 128-bit decimals use a portable integer.
+
 ## Testing
 
 Tests that need a server read a JSON file named by `MSSQL_TEST_CONFIG_FILE`;

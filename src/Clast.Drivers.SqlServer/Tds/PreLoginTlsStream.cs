@@ -31,7 +31,11 @@ internal sealed class PreLoginTlsStream : Stream
 
     public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
 
+#if NET
     public override int Read(Span<byte> buffer)
+#else
+    private int Read(Span<byte> buffer)
+#endif
     {
         if (!Encapsulate)
         {
@@ -57,7 +61,11 @@ internal sealed class PreLoginTlsStream : Stream
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
         ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
+#if NET
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+#else
+    private async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+#endif
     {
         if (!Encapsulate)
         {
@@ -82,7 +90,11 @@ internal sealed class PreLoginTlsStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
 
+#if NET
     public override void Write(ReadOnlySpan<byte> buffer)
+#else
+    private void Write(ReadOnlySpan<byte> buffer)
+#endif
     {
         if (!Encapsulate)
         {
@@ -106,7 +118,11 @@ internal sealed class PreLoginTlsStream : Stream
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
         WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
 
+#if NET
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+#else
+    private async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+#endif
     {
         if (!Encapsulate)
         {

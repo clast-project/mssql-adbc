@@ -184,11 +184,17 @@ public class CancellationTests
         using var stop = new CancellationTokenSource();
         Task canceller = Task.Run(() =>
         {
+            // Gaps of up to 0.8 ms, timed rather than spun: SpinWait's iterations last five
+            // times longer on .NET than on .NET Framework.
             var random = new Random(1);
             while (!stop.IsCancellationRequested)
             {
                 connection.Cancel();
-                Thread.SpinWait(random.Next(20_000));
+                long until = System.Diagnostics.Stopwatch.GetTimestamp() + (long)(random.NextDouble() * 0.0008 * System.Diagnostics.Stopwatch.Frequency);
+                while (System.Diagnostics.Stopwatch.GetTimestamp() < until)
+                {
+                    Thread.SpinWait(10);
+                }
             }
         });
 

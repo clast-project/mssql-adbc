@@ -155,13 +155,30 @@ internal static class Login7
         return feature;
     }
 
+    /// <summary>
+    /// The packet size to ask for. Over TLS, .NET Framework's SslStream splits
+    /// a packet larger than 16 KB (one TLS record's plaintext) into records
+    /// that SQL Server refuses (error 4014, "a fatal error occurred while
+    /// reading the input stream"), where .NET's split is accepted, so the
+    /// netstandard2.0 build asks for no more than 16384 bytes.
+    /// </summary>
+    internal static int RequestedPacketSize(int packetSize, bool encryptedAfterLogin) =>
+#if NET
+        packetSize;
+#else
+        encryptedAfterLogin ? Math.Min(packetSize, MaxTlsRecordPlaintext) : packetSize;
+
+    private const int MaxTlsRecordPlaintext = 16384;
+#endif
+
     /// <summary>Builds the LOGIN7 record, including feature extensions.</summary>
     /// <param name="fedAuth">A FEDAUTH feature extension (Entra authentication), which replaces the other credentials.</param>
     public static byte[] Build(
         SqlServerConnectionSettings settings,
         uint tdsVersion,
         ReadOnlySpan<byte> sspi,
-        ReadOnlySpan<byte> fedAuth = default)
+        ReadOnlySpan<byte> fedAuth = default,
+        bool encryptedAfterLogin = false)
     {
         bool useSspi = settings.IntegratedSecurity && fedAuth.IsEmpty;
         bool credentials = !useSspi && fedAuth.IsEmpty;
@@ -197,7 +214,7 @@ internal static class Login7
 
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(0), totalLength);
         BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(4), tdsVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(8), settings.PacketSize);
+        BinaryPrimitives.WriteInt32LittleEndian(span.Slice(8), RequestedPacketSize(settings.PacketSize, encryptedAfterLogin));
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(12), ClientProgramVersion);
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(16), Environment.ProcessId);
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(20), 0); // connection ID

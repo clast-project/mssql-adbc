@@ -200,7 +200,7 @@ internal sealed class PacketReader
         {
             return string.Empty;
         }
-        return new string(MemoryMarshal.Cast<byte, char>(ReadSpan(chars * 2)));
+        return MemoryMarshal.Cast<byte, char>(ReadSpan(chars * 2)).ToString();
     }
 
     /// <summary>Reads a B_VARCHAR (one-byte character count).</summary>
