@@ -24,6 +24,9 @@ public sealed class SqlServerStatement : AdbcStatement
     private IArrowArrayStream? _boundStream;
     private string? _partitionColumn;
     private int _partitionCount = 1;
+    private bool _incremental;
+    /// <summary>Incremental execution: the schema of partitions already returned, with the empty set still to return.</summary>
+    private Schema? _incrementalPending;
     private int? _parallelReads;
 
     internal SqlServerStatement(SqlServerConnection connection)
@@ -59,6 +62,10 @@ public sealed class SqlServerStatement : AdbcStatement
             case SqlServerParameters.ParallelReads:
                 _parallelReads = SqlServerConnectionSettings.ParseParallelReads(value);
                 break;
+            case AdbcOptions.Statement.Incremental:
+                _incremental = ParseBool(key, value);
+                _incrementalPending = null;
+                break;
             case SqlServerParameters.PartitionCount:
                 if (!int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _partitionCount) || _partitionCount < 1)
                 {
@@ -78,6 +85,7 @@ public sealed class SqlServerStatement : AdbcStatement
         AdbcOptions.Ingest.Temporary => AdbcOptions.GetEnabled(_temporary),
         AdbcOptions.Ingest.Mode => AdbcOptions.GetIngestMode(_ingestMode),
         SqlServerParameters.IngestTableLock => AdbcOptions.GetEnabled(_tableLock),
+        AdbcOptions.Statement.Incremental => AdbcOptions.GetEnabled(_incremental),
         SqlServerParameters.PartitionColumn => _partitionColumn,
         SqlServerParameters.PartitionCount => SqlServerParameters.Format(_partitionCount),
         SqlServerParameters.ParallelReads => SqlServerParameters.Format(_parallelReads ?? _connection.Session.Settings.ParallelReads),
@@ -132,15 +140,33 @@ public sealed class SqlServerStatement : AdbcStatement
         return new QueryResult(-1, _connection.ExecuteQueryStream(sql));
     }
 
+    /// <summary>
+    /// Splits the query into partitions over <see cref="SqlServerParameters.PartitionColumn"/>.
+    /// The partitions are range queries, all known at once and executed only
+    /// when read. So with incremental execution
+    /// (<see cref="AdbcOptions.Statement.Incremental"/>) the first call returns
+    /// them all, and the next returns the empty set that ends that execution; a
+    /// call after that starts a new one.
+    /// </summary>
     public override PartitionedResult ExecutePartitioned()
     {
+        if (_incremental && _incrementalPending is Schema schema)
+        {
+            _incrementalPending = null;
+            return new PartitionedResult(schema, -1, []);
+        }
         string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
         _connection.EnsureIdle();
         if (_boundStream != null)
         {
             throw AdbcException.NotImplemented("Partitioned execution with bound parameters is not supported");
         }
-        return SqlServerPartitions.Execute(_connection.Session, sql, _partitionColumn, _partitionCount);
+        PartitionedResult result = SqlServerPartitions.Execute(_connection.Session, sql, _partitionColumn, _partitionCount);
+        if (_incremental)
+        {
+            _incrementalPending = result.Schema;
+        }
+        return result;
     }
 
     public override UpdateResult ExecuteUpdate()

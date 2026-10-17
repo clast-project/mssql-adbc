@@ -287,7 +287,8 @@ those Arrow types.
 | ExecuteSchema | `SET FMTONLY ON`, with parameters declared from the bound schema or from `sp_describe_undeclared_parameters` |
 | GetParameterSchema | `sp_describe_undeclared_parameters` |
 | Statistics | approximate: table row counts (`sys.partitions`) and column distinct/null counts from each column's statistics histogram (`sys.dm_db_stats_histogram`); exact: row counts with `COUNT_BIG(*)`. No driver-specific statistics |
-| Not done | Substrait, incremental execution |
+| Incremental execution | `adbc.statement.exec.incremental`: the partitions are range queries, all known at once and run only when read, so the first ExecutePartitions returns them all and the next an empty set (which ends that execution). Progress (`adbc.statement.exec.progress`, `max_progress`) is not reported |
+| Not done | Substrait |
 
 ## Findings (M4, local SQL Server 2025, 1M rows × 17 columns)
 

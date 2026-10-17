@@ -69,6 +69,52 @@ public class PartitionTests
         Assert.Equal(Enumerable.Range(1, 1003), all.OrderBy(v => v));
     }
 
+    /// <summary>
+    /// Incremental execution: every partition on the first call (they are all
+    /// known at once), then the empty set that ends that execution; the next
+    /// call starts another.
+    /// </summary>
+    [SkippableFact]
+    public void IncrementalExecutionReturnsThePartitionsThenAnEmptySet()
+    {
+        using AdbcDatabase database = OpenDatabase();
+        using AdbcConnection connection = database.Connect(null);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = Query;
+        statement.SetOption(SqlServerParameters.PartitionColumn, "k");
+        statement.SetOption(SqlServerParameters.PartitionCount, "4");
+        Assert.Equal("false", statement.GetOption(AdbcOptions.Statement.Incremental));
+        statement.SetOption(AdbcOptions.Statement.Incremental, AdbcOptions.Enabled);
+        Assert.Equal("true", statement.GetOption(AdbcOptions.Statement.Incremental));
+
+        for (int execution = 0; execution < 2; execution++)
+        {
+            PartitionedResult first = statement.ExecutePartitioned();
+            Assert.Equal(4, first.PartitionDescriptors.Count);
+            Assert.Equal(Enumerable.Range(1, 1003), first.PartitionDescriptors.SelectMany(d => ReadValues(connection, d)).OrderBy(v => v));
+
+            PartitionedResult done = statement.ExecutePartitioned();
+            Assert.Empty(done.PartitionDescriptors);
+            Assert.Equal(first.Schema.FieldsList.Select(f => f.Name), done.Schema.FieldsList.Select(f => f.Name));
+        }
+
+        // Without it, every call executes and returns the partitions.
+        statement.SetOption(AdbcOptions.Statement.Incremental, AdbcOptions.Disabled);
+        Assert.Equal(4, statement.ExecutePartitioned().PartitionDescriptors.Count);
+        Assert.Equal(4, statement.ExecutePartitioned().PartitionDescriptors.Count);
+    }
+
+    /// <summary>Execution progress is not reported: the options are unknown.</summary>
+    [SkippableFact]
+    public void ProgressIsNotReported()
+    {
+        using AdbcDatabase database = OpenDatabase();
+        using AdbcConnection connection = database.Connect(null);
+        using AdbcStatement statement = connection.CreateStatement();
+        Assert.Equal(AdbcStatusCode.NotFound, Assert.Throws<AdbcException>(() => statement.GetOption(AdbcOptions.Statement.Progress)).Status);
+        Assert.Equal(AdbcStatusCode.NotFound, Assert.Throws<AdbcException>(() => statement.GetOptionDouble(AdbcOptions.Statement.MaxProgress)).Status);
+    }
+
     [SkippableFact]
     public void PartitionsReadInParallelOnSeparateConnections()
     {
