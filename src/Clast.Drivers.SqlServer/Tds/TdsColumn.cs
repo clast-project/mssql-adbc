@@ -305,6 +305,80 @@ internal sealed class TdsColumn
         }
     }
 
+    /// <summary>
+    /// Returns this column as a bulk-load target: fixed-length types become
+    /// their nullable (length-prefixed) equivalents so every value carries a
+    /// length and NULL is always representable.
+    /// </summary>
+    public TdsColumn ToBulkTarget()
+    {
+        TdsDataType type = Type switch
+        {
+            TdsDataType.Int1 or TdsDataType.Int2 or TdsDataType.Int4 or TdsDataType.Int8 => TdsDataType.IntN,
+            TdsDataType.Bit => TdsDataType.BitN,
+            TdsDataType.Float4 or TdsDataType.Float8 => TdsDataType.FloatN,
+            TdsDataType.Money or TdsDataType.Money4 => TdsDataType.MoneyN,
+            TdsDataType.DateTime or TdsDataType.DateTime4 => TdsDataType.DateTimeN,
+            TdsDataType.Decimal => TdsDataType.DecimalN,
+            TdsDataType.Numeric => TdsDataType.NumericN,
+            _ => Type,
+        };
+
+        var target = (TdsColumn)MemberwiseClone();
+        target.Type = type;
+        if (LengthKind == TdsLengthKind.Fixed)
+        {
+            target.LengthKind = TdsLengthKind.ByteLength;
+        }
+        return target;
+    }
+
+    /// <summary>Writes this column's COLMETADATA entry for a bulk-load stream.</summary>
+    public void WriteBulkMetadata(PacketWriter writer)
+    {
+        writer.WriteUInt32(0); // user type
+        writer.WriteUInt16((ushort)(Flags & (0x0001 | 0x000C | 0x0010))); // nullable, updatability, identity
+        writer.WriteByte((byte)Type);
+        switch (Type)
+        {
+            case TdsDataType.IntN:
+            case TdsDataType.BitN:
+            case TdsDataType.FloatN:
+            case TdsDataType.MoneyN:
+            case TdsDataType.DateTimeN:
+            case TdsDataType.Guid:
+                writer.WriteByte((byte)MaxLength);
+                break;
+            case TdsDataType.DecimalN:
+            case TdsDataType.NumericN:
+                writer.WriteByte((byte)MaxLength);
+                writer.WriteByte(Precision);
+                writer.WriteByte(Scale);
+                break;
+            case TdsDataType.DateN:
+                break;
+            case TdsDataType.TimeN:
+            case TdsDataType.DateTime2N:
+            case TdsDataType.DateTimeOffsetN:
+                writer.WriteByte(Scale);
+                break;
+            case TdsDataType.BigVarChar:
+            case TdsDataType.BigChar:
+            case TdsDataType.NVarChar:
+            case TdsDataType.NChar:
+                writer.WriteUInt16((ushort)MaxLength);
+                writer.WriteBytes(Collation);
+                break;
+            case TdsDataType.BigVarBinary:
+            case TdsDataType.BigBinary:
+                writer.WriteUInt16((ushort)MaxLength);
+                break;
+            default:
+                throw new AdbcException($"Bulk ingest into {SqlTypeName} columns is not yet supported", AdbcStatusCode.NotImplemented);
+        }
+        writer.WriteBVarChar(Name);
+    }
+
     public const ulong PlpNull = 0xFFFFFFFFFFFFFFFF;
     public const ulong PlpUnknownLength = 0xFFFFFFFFFFFFFFFE;
 

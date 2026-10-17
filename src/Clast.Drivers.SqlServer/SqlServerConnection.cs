@@ -27,6 +27,18 @@ public sealed class SqlServerConnection : AdbcConnection
         return new SqlServerStatement(this);
     }
 
+    public override AdbcStatement BulkIngest(string targetTableName, BulkIngestMode mode)
+    {
+        return BulkIngest(null, null, targetTableName, mode, isTemporary: false);
+    }
+
+    public override AdbcStatement BulkIngest(string? targetCatalog, string? targetDbSchema, string targetTableName, BulkIngestMode mode, bool isTemporary)
+    {
+        var statement = new SqlServerStatement(this);
+        statement.ConfigureIngest(targetCatalog, targetDbSchema, targetTableName, mode, isTemporary);
+        return statement;
+    }
+
     public override IArrowArrayStream GetObjects(
         GetObjectsDepth depth,
         string? catalogPattern,

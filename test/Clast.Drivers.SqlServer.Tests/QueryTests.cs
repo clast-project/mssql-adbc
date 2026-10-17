@@ -24,7 +24,7 @@ public class QueryTests
         return new SqlServerDriver().Open(options).Connect(null);
     }
 
-    private static List<object?[]> ReadAdbc(AdbcConnection connection, string sql, out Schema schema, out int batches)
+    internal static List<object?[]> ReadAdbc(AdbcConnection connection, string sql, out Schema schema, out int batches)
     {
         using AdbcStatement statement = connection.CreateStatement();
         statement.SqlQuery = sql;
@@ -52,7 +52,7 @@ public class QueryTests
         return rows;
     }
 
-    private static List<object?[]> ReadSqlClient(string sql)
+    internal static List<object?[]> ReadSqlClient(string sql)
     {
         SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
         using var connection = new SqlConnection(config.SqlClientConnectionString);
@@ -72,7 +72,7 @@ public class QueryTests
         return rows;
     }
 
-    private static object? ArrowValue(IArrowArray array, int index)
+    internal static object? ArrowValue(IArrowArray array, int index)
     {
         if (array.IsNull(index))
         {
@@ -141,7 +141,7 @@ public class QueryTests
         AssertRowsEqual(expected, actual);
     }
 
-    private static void AssertRowsEqual(List<object?[]> expected, List<object?[]> actual)
+    internal static void AssertRowsEqual(List<object?[]> expected, List<object?[]> actual)
     {
         Assert.Equal(expected.Count, actual.Count);
         for (int r = 0; r < expected.Count; r++)

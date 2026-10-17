@@ -57,6 +57,16 @@ internal sealed class PacketWriter
         _stream.Flush();
     }
 
+    /// <summary>
+    /// Ends the current message with the IGNORE bit set, so the server
+    /// discards everything sent for it.
+    /// </summary>
+    public void AbortMessage()
+    {
+        SendPacket(PacketStatus.EndOfMessage | PacketStatus.Ignore);
+        _stream.Flush();
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteByte(byte value)
     {
@@ -116,6 +126,8 @@ internal sealed class PacketWriter
             WriteBytesSlow(bytes);
         }
     }
+
+    public void WriteUInt64(ulong value) => WriteInt64(unchecked((long)value));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBytes(ReadOnlySpan<byte> bytes)

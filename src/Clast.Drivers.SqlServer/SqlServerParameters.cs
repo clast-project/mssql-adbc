@@ -38,6 +38,9 @@ public static class SqlServerParameters
     /// <summary>Seconds allowed for connecting and logging in.</summary>
     public const string ConnectTimeout = "adbc.mssql.connect_timeout";
 
+    /// <summary><c>true</c> to take a table lock during bulk ingestion (<c>INSERT BULK ... WITH (TABLOCK)</c>).</summary>
+    public const string IngestTableLock = "adbc.mssql.ingest.table_lock";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 }
