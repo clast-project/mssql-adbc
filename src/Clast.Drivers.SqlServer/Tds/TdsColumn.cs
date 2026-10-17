@@ -102,6 +102,27 @@ internal sealed class TdsColumn
     /// <summary>Byte size of a <see cref="TdsLengthKind.Fixed"/> value.</summary>
     public int FixedSize { get; private set; }
 
+    /// <summary>A column (or RPC parameter) of a nullable, length-prefixed wire type.</summary>
+    public static TdsColumn Create(string name, TdsDataType type, int maxLength, byte precision = 0, byte scale = 0, byte[]? collation = null) => new()
+    {
+        Name = name,
+        Type = type,
+        Flags = 0x0001,
+        MaxLength = maxLength,
+        Precision = precision,
+        Scale = scale,
+        Collation = collation ?? [],
+        LengthKind = maxLength == 0xFFFF ? TdsLengthKind.Plp
+            : type is TdsDataType.BigVarChar or TdsDataType.BigChar or TdsDataType.NVarChar or TdsDataType.NChar or TdsDataType.BigVarBinary or TdsDataType.BigBinary
+                ? TdsLengthKind.UShortLength
+                : TdsLengthKind.ByteLength,
+    };
+
+    /// <summary>True when values of the two columns have the same wire format and Arrow type.</summary>
+    public bool SameTypeAs(TdsColumn other) =>
+        Type == other.Type && MaxLength == other.MaxLength && Precision == other.Precision && Scale == other.Scale &&
+        IsNullable == other.IsNullable && Collation.AsSpan().SequenceEqual(other.Collation);
+
     /// <summary>Reads the body of a COLMETADATA token (after the token byte). Returns null for "no metadata".</summary>
     public static TdsColumn[]? ReadMetadata(PacketReader reader)
     {
@@ -338,6 +359,13 @@ internal sealed class TdsColumn
     {
         writer.WriteUInt32(0); // user type
         writer.WriteUInt16((ushort)(Flags & (0x0001 | 0x000C | 0x0010))); // nullable, updatability, identity
+        WriteTypeInfo(writer);
+        writer.WriteBVarChar(Name);
+    }
+
+    /// <summary>Writes this column's TYPE_INFO, as in bulk-load metadata and RPC parameters.</summary>
+    public void WriteTypeInfo(PacketWriter writer)
+    {
         writer.WriteByte((byte)Type);
         switch (Type)
         {
@@ -374,9 +402,8 @@ internal sealed class TdsColumn
                 writer.WriteUInt16((ushort)MaxLength);
                 break;
             default:
-                throw new AdbcException($"Bulk ingest into {SqlTypeName} columns is not yet supported", AdbcStatusCode.NotImplemented);
+                throw new AdbcException($"Sending {SqlTypeName} values is not yet supported", AdbcStatusCode.NotImplemented);
         }
-        writer.WriteBVarChar(Name);
     }
 
     public const ulong PlpNull = 0xFFFFFFFFFFFFFFFF;

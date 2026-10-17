@@ -116,6 +116,10 @@ public sealed class SqlServerStatement : AdbcStatement
         string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
+        if (TakeBoundStream() is IArrowArrayStream parameters)
+        {
+            return new QueryResult(-1, SqlServerRpc.ExecuteQuery(session, sql, parameters));
+        }
         int parallelism = _parallelReads ?? session.Settings.ParallelReads;
 
         // Helper sessions cannot see this session's uncommitted work, so stay serial inside a transaction.
@@ -130,6 +134,10 @@ public sealed class SqlServerStatement : AdbcStatement
     {
         string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
         _connection.EnsureIdle();
+        if (_boundStream != null)
+        {
+            throw AdbcException.NotImplemented("Partitioned execution with bound parameters is not supported");
+        }
         return SqlServerPartitions.Execute(_connection.Session, sql, _partitionColumn, _partitionCount);
     }
 
@@ -157,8 +165,75 @@ public sealed class SqlServerStatement : AdbcStatement
         }
 
         string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        if (TakeBoundStream() is IArrowArrayStream parameters)
+        {
+            return new UpdateResult(SqlServerRpc.ExecuteUpdate(_connection.Session, sql, parameters));
+        }
         return new UpdateResult(_connection.Session.ExecuteNonQuery(sql));
     }
+
+    /// <summary>Hands over the bound data; each Bind or BindStream is used by one execution.</summary>
+    private IArrowArrayStream? TakeBoundStream()
+    {
+        IArrowArrayStream? stream = _boundStream;
+        _boundStream = null;
+        return stream;
+    }
+
+    /// <summary>
+    /// Nothing to do ahead of execution: sp_executesql already caches the
+    /// plan of a parameterized statement. Only checks that there is a query.
+    /// </summary>
+    public override void Prepare()
+    {
+        _ = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+    }
+
+    /// <summary>
+    /// The schema of the query's first result set, without running it. Bound
+    /// parameters are declared with their bound types; otherwise with the
+    /// types the server infers.
+    /// </summary>
+    public override Schema ExecuteSchema()
+    {
+        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        _connection.EnsureIdle();
+        TdsSession session = _connection.Session;
+        string declarations = _boundStream != null
+            ? SqlServerRpc.Declarations(_boundStream.Schema, session.DefaultCollation)
+            : Declarations(DescribeParameters(session, sql));
+        return SqlServerPartitions.DescribeResult(session, sql, declarations);
+    }
+
+    /// <summary>
+    /// The parameters the query refers to, with the types the server infers
+    /// from their use (<c>sp_describe_undeclared_parameters</c>). Field names
+    /// omit the leading @.
+    /// </summary>
+    public override Schema GetParameterSchema()
+    {
+        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        _connection.EnsureIdle();
+        TdsSession session = _connection.Session;
+        List<(string Name, string Type)> parameters = DescribeParameters(session, sql);
+        if (parameters.Count == 0)
+        {
+            return new Schema([], null);
+        }
+        string columns = string.Join(", ", parameters.Select(p => $"CAST(NULL AS {p.Type}) AS {IngestTarget.Quote(p.Name.TrimStart('@'))}"));
+        return SqlServerPartitions.DescribeResult(session, "SELECT " + columns);
+    }
+
+    private static List<(string Name, string Type)> DescribeParameters(TdsSession session, string sql)
+    {
+        List<object?[]> rows = SqlServerMetadata.Query(session,
+            $"EXEC sys.sp_describe_undeclared_parameters @tsql = {SqlServerMetadata.Literal(sql)}")[0];
+        // Columns: parameter_ordinal, name, suggested_system_type_id, suggested_system_type_name, ...
+        return rows.OrderBy(r => (int)r[0]!).Select(r => ((string)r[1]!, (string)r[3]!)).ToList();
+    }
+
+    private static string Declarations(List<(string Name, string Type)> parameters) =>
+        parameters.Count == 0 ? "" : "DECLARE " + string.Join(", ", parameters.Select(p => $"{p.Name} {p.Type}")) + ";\n";
 
     /// <summary>
     /// Cancels the operation in progress on the statement's connection, which

@@ -22,6 +22,7 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
     private readonly int _batchRows;
     private readonly byte[] _nullBitmap;
     private readonly bool _stopAtResultEnd;
+    private readonly IQueryContinuation? _continuation;
     private bool _resultComplete;
     private bool _finished;
 
@@ -31,10 +32,15 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
     /// <see cref="TdsSession.ReadUntilResultSet"/>. Otherwise the rest of the
     /// response is skipped.
     /// </param>
-    public SqlServerQueryStream(TdsSession session, TdsColumn[] columns, bool stopAtResultEnd = false)
+    /// <param name="continuation">
+    /// Further executions whose first result sets continue this stream; the
+    /// stream owns it.
+    /// </param>
+    public SqlServerQueryStream(TdsSession session, TdsColumn[] columns, bool stopAtResultEnd = false, IQueryContinuation? continuation = null)
     {
         _session = session;
         _stopAtResultEnd = stopAtResultEnd;
+        _continuation = continuation;
         _columns = columns;
         _batchRows = session.Settings.BatchRows;
         _decoders = new ColumnDecoder[columns.Length];
@@ -113,9 +119,42 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
             return null;
         }
 
-        PacketReader reader = _session.Reader;
         ColumnDecoder[] decoders = _decoders;
         int rows = 0;
+        while (true)
+        {
+            rows = ReadRows(decoders, rows);
+            if (!_resultComplete)
+            {
+                break;
+            }
+
+            // Read the rest of the response now so that errors from the
+            // result set (or later statements) surface before the last batch.
+            Finish();
+            if (!Continue() || rows == _batchRows)
+            {
+                break;
+            }
+        }
+
+        if (rows == 0)
+        {
+            return null;
+        }
+
+        var arrays = new IArrowArray[decoders.Length];
+        for (int i = 0; i < decoders.Length; i++)
+        {
+            arrays[i] = decoders[i].Build();
+        }
+        return new RecordBatch(Schema, arrays, rows);
+    }
+
+    /// <summary>Decodes rows until the batch holds <see cref="_batchRows"/> or the result set ends.</summary>
+    private int ReadRows(ColumnDecoder[] decoders, int rows)
+    {
+        PacketReader reader = _session.Reader;
         try
         {
             while (rows < _batchRows)
@@ -164,24 +203,37 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
             _session.ActiveStream = null;
             throw;
         }
+        return rows;
+    }
 
-        if (_resultComplete)
+    /// <summary>
+    /// Starts the next execution that produces a result set, if any, and
+    /// positions the stream in it.
+    /// </summary>
+    private bool Continue()
+    {
+        if (_continuation == null)
         {
-            // Read the rest of the response now so that errors from the
-            // result set (or later statements) surface before the last batch.
-            Finish();
-            if (rows == 0)
+            return false;
+        }
+        while (_continuation.SendNext())
+        {
+            TdsColumn[]? columns = _session.ReadUntilResultSet();
+            if (columns == null)
             {
-                return null;
+                continue;
             }
+            if (columns.Length != _columns.Length || !columns.Zip(_columns).All(pair => pair.First.SameTypeAs(pair.Second)))
+            {
+                _session.DrainResponse(columns);
+                throw new AdbcException("Executions for different parameter rows returned result sets of different types", AdbcStatusCode.InvalidData);
+            }
+            _resultComplete = false;
+            _finished = false;
+            _session.ActiveStream = this;
+            return true;
         }
-
-        var arrays = new IArrowArray[decoders.Length];
-        for (int i = 0; i < decoders.Length; i++)
-        {
-            arrays[i] = decoders[i].Build();
-        }
-        return new RecordBatch(Schema, arrays, rows);
+        return false;
     }
 
     private void Finish()
@@ -204,6 +256,7 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
         {
             decoder.Dispose();
         }
+        _continuation?.Dispose();
 
         if (!_finished && !_session.IsBroken)
         {
@@ -236,4 +289,11 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
         {
         }
     }
+}
+
+/// <summary>Further executions of a query, one per bound parameter row, whose results continue one stream.</summary>
+internal interface IQueryContinuation : IDisposable
+{
+    /// <summary>Sends the next execution's request; false when there are no more.</summary>
+    bool SendNext();
 }

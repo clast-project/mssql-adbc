@@ -19,6 +19,7 @@ internal sealed class PacketWriter
     private int _position;
     private PacketType _type;
     private byte _packetId;
+    private long _sentBytes;
 
     public PacketWriter(Stream stream, int packetSize)
     {
@@ -35,6 +36,9 @@ internal sealed class PacketWriter
 
     public int PacketSize => _buffer.Length;
 
+    /// <summary>Payload bytes written in the current message so far.</summary>
+    public long BytesWritten => _sentBytes + _position - TdsConstants.HeaderLength;
+
     /// <summary>Changes the packet size; only valid between messages.</summary>
     public void SetPacketSize(int packetSize)
     {
@@ -48,6 +52,7 @@ internal sealed class PacketWriter
     {
         _type = type;
         _packetId = 1;
+        _sentBytes = 0;
         _position = TdsConstants.HeaderLength;
     }
 
@@ -193,6 +198,7 @@ internal sealed class PacketWriter
             TdsTrace.Packet("->", buffer[0], buffer[1], _position);
         }
         _stream.Write(buffer, 0, _position);
+        _sentBytes += _position - TdsConstants.HeaderLength;
         _position = TdsConstants.HeaderLength;
     }
 }

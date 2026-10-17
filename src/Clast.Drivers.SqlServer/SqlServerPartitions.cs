@@ -97,10 +97,13 @@ internal static class SqlServerPartitions
         return new PartitionDescriptor(bytes);
     }
 
-    /// <summary>Gets the schema of the query's first result set without running it.</summary>
-    private static Schema DescribeResult(TdsSession session, string sql)
+    /// <summary>
+    /// Gets the schema of the query's first result set without running it.
+    /// <paramref name="declarations"/> declares any parameters it refers to.
+    /// </summary>
+    internal static Schema DescribeResult(TdsSession session, string sql, string declarations = "")
     {
-        session.SendSqlBatch($"SET FMTONLY ON; {sql}; SET FMTONLY OFF;");
+        session.SendSqlBatch($"{declarations}SET FMTONLY ON; {sql}; SET FMTONLY OFF;");
         TdsColumn[]? columns = session.ReadUntilResultSet();
         if (columns == null)
         {

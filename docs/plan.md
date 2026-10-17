@@ -52,7 +52,7 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 | Area | Prototype | Deferred |
 |---|---|---|
 | Connect | TCP, named pipes/LocalDB, TLS, SQL auth, integrated (SSPI) | Entra, failover, MARS, pooling |
-| ADBC | ExecuteQuery, ExecuteUpdate, BulkIngest, GetInfo, GetTableSchema, version 1.1 | GetObjects, transactions, prepare/bind, partitions, statistics |
+| ADBC | ExecuteQuery, ExecuteUpdate, BulkIngest, GetInfo, GetTableSchema, version 1.1 | GetObjects, transactions, prepare/bind, partitions, statistics (all but statistics since done; see below) |
 | Types | bit, tinyint–bigint, real/float, decimal/numeric, (n)varchar(n), varbinary(n), date, datetime2, datetimeoffset (`arrow.timestamp_with_offset`), uniqueidentifier (`arrow.uuid`) | `(max)`/PLP, datetime/smalldatetime/time, money, sql_variant (`arrow.parquet.variant`), xml, json, vector, hierarchyid |
 
 ## Milestones
@@ -76,6 +76,22 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 - ADBC C# referenced from a local checkout via `AdbcCSharpRoot` in
   `Directory.Build.props`; expected to become a submodule.
 - net10.0 only for now; netstandard2.0 later, without shaping today's design.
+
+## ADBC 1.1 coverage
+
+| Area | Implementation |
+|---|---|
+| Cancellation | TDS attention; see Findings |
+| GetInfo | vendor name/version (from LOGINACK), SQL/Substrait support, driver name/version, Arrow version, ADBC version |
+| GetTableTypes | `TABLE`, `VIEW` |
+| GetTableSchema | `SELECT TOP 0` and the same type mapping as query results |
+| GetObjects | databases → schemas → tables/views → columns (XDBC/ODBC attributes) and constraints (PK, UNIQUE, FK with referenced columns, CHECK), from each database's catalog views, one batch per database |
+| Transactions | autocommit off = `IMPLICIT_TRANSACTIONS ON`; Commit/Rollback; isolation levels incl. snapshot (helper sessions follow) |
+| Options | current catalog (USE), current schema (read-only), `GetOption` on database, connection and statement |
+| Bind / Prepare | bound rows are `sp_executesql` RPC calls with typed parameters (`@name` per field, `@p1`… if unnamed). ExecuteUpdate batches up to 1000 calls (≤1 MB) per message; ExecuteQuery runs a call per row and concatenates the result sets. Prepare only validates |
+| ExecuteSchema | `SET FMTONLY ON`, with parameters declared from the bound schema or from `sp_describe_undeclared_parameters` |
+| GetParameterSchema | `sp_describe_undeclared_parameters` |
+| Not done | statistics, Substrait, read-only connections, incremental execution |
 
 ## Findings (M4, local SQL Server 2025, 1M rows × 17 columns)
 

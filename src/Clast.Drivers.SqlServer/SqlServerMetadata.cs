@@ -362,10 +362,10 @@ internal static class SqlServerMetadata
     private static string Like(string column, string? pattern) =>
         pattern == null ? "" : $" AND {column} LIKE {Literal(pattern.Replace("[", "[[]"))}";
 
-    private static string Literal(string value) => "N'" + value.Replace("'", "''") + "'";
+    internal static string Literal(string value) => "N'" + value.Replace("'", "''") + "'";
 
     /// <summary>Runs a batch and returns the rows of each of its result sets.</summary>
-    private static List<List<object?[]>> Query(TdsSession session, string sql)
+    internal static List<List<object?[]>> Query(TdsSession session, string sql)
     {
         var results = new List<List<object?[]>>();
         session.SendSqlBatch(sql);
