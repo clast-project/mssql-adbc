@@ -11,7 +11,7 @@ namespace Clast.Drivers.SqlServer.Arrow;
 /// Decodes one column's values from TDS rows directly into Arrow buffers.
 /// One decoder is created per column when COLMETADATA arrives.
 /// </summary>
-internal abstract class ColumnDecoder
+internal abstract class ColumnDecoder : IDisposable
 {
     protected ColumnDecoder(TdsColumn column, IArrowType arrowType)
     {
@@ -31,6 +31,11 @@ internal abstract class ColumnDecoder
 
     /// <summary>Returns the values appended since the last call and starts a new batch.</summary>
     public abstract IArrowArray Build();
+
+    /// <summary>Frees native memory for values appended but not yet built.</summary>
+    public virtual void Dispose()
+    {
+    }
 
     protected static IArrowArray BuildArray(IArrowType type, int length, int nullCount, ArrowBuffer validity, params ArrowBuffer[] buffers)
     {

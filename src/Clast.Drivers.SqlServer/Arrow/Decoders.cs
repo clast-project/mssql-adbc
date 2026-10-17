@@ -56,6 +56,11 @@ internal sealed class PrimitiveDecoder<T> : ColumnDecoder where T : unmanaged
         _validity.AppendNull();
     }
 
+    public override void Dispose()
+    {
+        _values.Dispose();
+    }
+
     public override IArrowArray Build()
     {
         int length = _validity.Length;
@@ -169,6 +174,11 @@ internal sealed class DecimalDecoder : ColumnDecoder
         _validity.AppendNull();
     }
 
+    public override void Dispose()
+    {
+        _values.Dispose();
+    }
+
     public override IArrowArray Build()
     {
         int length = _validity.Length;
@@ -225,6 +235,11 @@ internal sealed class MoneyDecoder : ColumnDecoder
     {
         _values.Append(default(Int128));
         _validity.AppendNull();
+    }
+
+    public override void Dispose()
+    {
+        _values.Dispose();
     }
 
     public override IArrowArray Build()
@@ -287,7 +302,6 @@ internal sealed class VariableDecoder : ColumnDecoder
         }
 
         _offsets = new ValueBuffer((capacity + 1) * 4);
-        _offsets.Append(0);
         int estimate = column.MaxLength is > 0 and < 0xFFFF ? Math.Min(column.MaxLength, 64) : 64;
         _data = new ValueBuffer(capacity * estimate);
     }
@@ -359,7 +373,7 @@ internal sealed class VariableDecoder : ColumnDecoder
                 AppendCodePage(bytes);
                 break;
         }
-        _offsets.Append(_data.Length);
+        AppendOffset();
         _validity.AppendValid();
     }
 
@@ -397,8 +411,25 @@ internal sealed class VariableDecoder : ColumnDecoder
 
     public override void AppendNull()
     {
-        _offsets.Append(_data.Length);
+        AppendOffset();
         _validity.AppendNull();
+    }
+
+    /// <summary>Appends the end offset of the current value, starting the batch's offsets with 0.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AppendOffset()
+    {
+        if (_offsets.Length == 0)
+        {
+            _offsets.Append(0);
+        }
+        _offsets.Append(_data.Length);
+    }
+
+    public override void Dispose()
+    {
+        _offsets.Dispose();
+        _data.Dispose();
     }
 
     public override IArrowArray Build()
@@ -408,7 +439,6 @@ internal sealed class VariableDecoder : ColumnDecoder
         ArrowBuffer validity = _validity.Build();
         ArrowBuffer offsets = _offsets.Build();
         ArrowBuffer data = _data.Build();
-        _offsets.Append(0);
         return BuildArray(ArrowType, length, nullCount, validity, offsets, data);
     }
 }
@@ -458,6 +488,11 @@ internal sealed class GuidDecoder : ColumnDecoder
     {
         _values.AppendZeros(16);
         _validity.AppendNull();
+    }
+
+    public override void Dispose()
+    {
+        _values.Dispose();
     }
 
     public override IArrowArray Build()
@@ -628,6 +663,12 @@ internal sealed class TemporalDecoder : ColumnDecoder
             _offsets.Append((short)0);
         }
         _validity.AppendNull();
+    }
+
+    public override void Dispose()
+    {
+        _values.Dispose();
+        _offsets.Dispose();
     }
 
     public override IArrowArray Build()

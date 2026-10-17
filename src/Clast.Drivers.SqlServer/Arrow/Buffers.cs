@@ -4,22 +4,26 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Apache.Arrow;
+using Apache.Arrow.Memory;
 
 namespace Clast.Drivers.SqlServer.Arrow;
 
 /// <summary>
-/// A growable, uninitialized byte buffer that is handed to Arrow without
-/// copying. After <see cref="Build"/> the memory belongs to the array and the
-/// next batch starts with a fresh allocation of the same capacity.
+/// A growable, uninitialized byte buffer in aligned native memory, handed to
+/// Arrow without copying: <see cref="Build"/> transfers ownership to the
+/// returned <see cref="ArrowBuffer"/>, and disposing the record batch frees it.
+/// The next batch's memory is allocated lazily, on first append.
 /// </summary>
 internal struct ValueBuffer
 {
-    private byte[] _array;
+    private NativeBuffer<byte, NoOpAllocationTracker>? _buffer;
+    private readonly int _initialCapacity;
     private int _length;
 
     public ValueBuffer(int capacity)
     {
-        _array = GC.AllocateUninitializedArray<byte>(Math.Max(capacity, 64));
+        _initialCapacity = Math.Max(capacity, 64);
+        _buffer = null;
         _length = 0;
     }
 
@@ -29,11 +33,11 @@ internal struct ValueBuffer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Span<byte> GetSpan(int size)
     {
-        if (_array.Length - _length < size)
+        if (_buffer == null || _buffer.Length - _length < size)
         {
             Grow(size);
         }
-        return _array.AsSpan(_length);
+        return _buffer!.ByteSpan.Slice(_length);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -44,22 +48,18 @@ internal struct ValueBuffer
     public void Append<T>(T value) where T : unmanaged
     {
         int size = Unsafe.SizeOf<T>();
-        if (_array.Length - _length < size)
+        if (_buffer == null || _buffer.Length - _length < size)
         {
             Grow(size);
         }
-        Unsafe.WriteUnaligned(ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(_array), (nint)_length), value);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref MemoryMarshal.GetReference(_buffer!.ByteSpan), (nint)_length), value);
         _length += size;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Append(ReadOnlySpan<byte> bytes)
     {
-        if (_array.Length - _length < bytes.Length)
-        {
-            Grow(bytes.Length);
-        }
-        bytes.CopyTo(_array.AsSpan(_length));
+        bytes.CopyTo(GetSpan(bytes.Length));
         _length += bytes.Length;
     }
 
@@ -67,29 +67,40 @@ internal struct ValueBuffer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AppendZeros(int size)
     {
-        if (_array.Length - _length < size)
-        {
-            Grow(size);
-        }
-        _array.AsSpan(_length, size).Clear();
+        GetSpan(size).Slice(0, size).Clear();
         _length += size;
     }
 
     public ArrowBuffer Build()
     {
-        var buffer = new ArrowBuffer(_array.AsMemory(0, _length));
-        _array = GC.AllocateUninitializedArray<byte>(_array.Length);
+        if (_buffer == null)
+        {
+            return ArrowBuffer.Empty;
+        }
+        ArrowBuffer result = _buffer.Build();
+        _buffer = null;
         _length = 0;
-        return buffer;
+        return result;
+    }
+
+    public void Dispose()
+    {
+        _buffer?.Dispose();
+        _buffer = null;
+        _length = 0;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int size)
     {
-        int capacity = Math.Max(_array.Length * 2, _length + size);
-        byte[] array = GC.AllocateUninitializedArray<byte>(capacity);
-        _array.AsSpan(0, _length).CopyTo(array);
-        _array = array;
+        if (_buffer == null)
+        {
+            _buffer = new NativeBuffer<byte, NoOpAllocationTracker>(Math.Max(_initialCapacity, size), zeroFill: false);
+        }
+        else
+        {
+            _buffer.Grow(_length + size, zeroFill: false);
+        }
     }
 }
 

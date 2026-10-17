@@ -76,3 +76,21 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 - ADBC C# referenced from a local checkout via `AdbcCSharpRoot` in
   `Directory.Build.props`; expected to become a submodule.
 - net10.0 only for now; netstandard2.0 later, without shaping today's design.
+
+## Findings (M4, local SQL Server 2025, 1M rows × 17 columns)
+
+- Reads are bound by the server and transport, not by decoding: draining the
+  token stream without decoding takes as long as full Arrow decoding
+  (`ReadDiagnostics`). Faster decoders will not move end-to-end read time
+  against this server; packet size and encryption do.
+- TLS sessions are granted at most 16384-byte packets. Login-only encryption
+  (`adbc.mssql.encrypt=optional`) allows 32767 and reads ~25% faster.
+- Arrow buffers come from `Apache.Arrow.Memory.NativeBuffer<,>` (public in
+  Apache.Arrow 23): aligned native memory, ownership moved into the
+  `ArrowBuffer` without a copy, freed when the batch is disposed. A 1M-row
+  read allocates ~4 MB of managed memory and causes no GCs.
+- Ingest with TABLOCK is ~1.4× faster than SqlBulkCopy and ~2.9× faster than
+  the Go driver; without TABLOCK the gap is smaller and server-dominated.
+- Next levers: partitioned parallel reads (ADBC `ExecutePartitions` over
+  several sessions) to use more server cores, and read-ahead to overlap
+  TLS decryption with decoding when decoding cost becomes visible.

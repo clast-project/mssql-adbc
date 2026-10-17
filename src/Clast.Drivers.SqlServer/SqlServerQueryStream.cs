@@ -142,6 +142,11 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
 
     public void Dispose()
     {
+        foreach (ColumnDecoder decoder in _decoders)
+        {
+            decoder.Dispose();
+        }
+
         if (!_finished && !_session.IsBroken)
         {
             // TODO: send an attention instead of reading the rest of a large result.
