@@ -178,7 +178,8 @@ internal static class Login7
         uint tdsVersion,
         ReadOnlySpan<byte> sspi,
         ReadOnlySpan<byte> fedAuth = default,
-        bool encryptedAfterLogin = false)
+        bool encryptedAfterLogin = false,
+        ReadOnlySpan<byte> sessionRecovery = default)
     {
         bool useSspi = settings.IntegratedSecurity && fedAuth.IsEmpty;
         bool credentials = !useSspi && fedAuth.IsEmpty;
@@ -200,7 +201,7 @@ internal static class Login7
             (byte)FeatureId.VectorSupport, 1, 0, 0, 0, 1,
             (byte)FeatureId.EnhancedRoutingSupport, 0, 0, 0, 0,
         ];
-        byte[] featureExt = [.. fedAuth, .. standardFeatures, (byte)FeatureId.Terminator];
+        byte[] featureExt = [.. fedAuth, .. sessionRecovery, .. standardFeatures, (byte)FeatureId.Terminator];
 
         int variableLength =
             2 * (hostName.Length + userName.Length + password.Length + appName.Length + serverName.Length

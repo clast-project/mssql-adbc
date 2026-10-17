@@ -139,6 +139,32 @@ and there 4060 ("cannot open database") is nearly always a wrong name that a
 retry would only report 10 seconds later. SqlClient also raises an explicit
 count of 1 for Azure hosts; here an explicit count is used as given.
 
+## Session recovery
+
+Logins request session recovery (feature extension 0x01). When the server
+acknowledges it, the session tracks what the server needs to recreate it:
+the initial states from the acknowledgement, their changes from SESSIONSTATE
+tokens (opaque values, each marked recoverable or not), and the database,
+language and collation from ENVCHANGE.
+
+Before each request, the connection checks the idle session's socket. A
+readable socket with nothing outstanding means the server closed it (a
+failover, a gateway reset, a killed session). If the session is recoverable,
+the connection logs in again from its original settings, so routing happens
+again. That login carries the recovery data, the server recreates the
+session's database, language and SET options, and the new session replaces
+the old one. The isolation level the driver set carries over, and stale
+parallel-read helper sessions are dropped. Transient login errors during the
+reconnect get the usual connect retry.
+
+It doesn't recover when a transaction was open, when the server reported
+unrecoverable state (temporary tables, for example), when the server did not
+acknowledge the feature, or with `adbc.mssql.session_recovery=false`. Then
+the next request fails with IOError saying why. A connection lost during a
+request is not retried: that request fails, and the next one recovers. Named
+pipes give no early sign of a closed connection, so a pipe session fails on
+its next request instead.
+
 ## Synapse and Fabric
 
 The analytics engines speak TDS but accept a subset of T-SQL. The driver

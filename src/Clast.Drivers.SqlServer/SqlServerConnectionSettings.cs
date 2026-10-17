@@ -57,6 +57,8 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>Retries after a login fails with a transient error (see <see cref="TdsSession.IsTransient"/>).</summary>
     public int ConnectRetryCount { get; private set; }
     public TimeSpan ConnectRetryInterval { get; private set; } = TimeSpan.FromSeconds(10);
+    /// <summary>Whether to request session recovery, and so reconnect a session whose connection broke while idle.</summary>
+    public bool SessionRecovery { get; private set; } = true;
     public int BatchRows { get; private set; } = 65536;
     public int ParallelReads { get; private set; } = 1;
     public string? ServerSpn { get; private set; }
@@ -135,6 +137,10 @@ internal sealed class SqlServerConnectionSettings
         else
         {
             settings.ConnectRetryCount = DefaultConnectRetryCount(settings.Host);
+        }
+        if (options.TryGetValue(SqlServerParameters.SessionRecovery, out string? recovery))
+        {
+            settings.SessionRecovery = ParseBool(SqlServerParameters.SessionRecovery, recovery);
         }
         if (options.TryGetValue(SqlServerParameters.ConnectRetryInterval, out string? retryInterval))
         {

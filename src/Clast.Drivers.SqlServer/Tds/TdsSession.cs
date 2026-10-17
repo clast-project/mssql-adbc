@@ -28,6 +28,14 @@ internal sealed class TdsSession : IDisposable
     private string? _spn;
     private bool _sspiFailed;
     private bool _broken;
+    private Socket? _socket;
+
+    // Session recovery: the state this session tracks (null when the server did not
+    // acknowledge the feature), and, for a recovery login, the session it recreates.
+    private SessionRecovery? _recovery;
+    private readonly SessionRecovery? _recoveringFrom;
+    private readonly byte[]? _recoveryFeature;
+    private bool _recoveryAcknowledged;
 
     // Request state. Cancel can be called on any thread, so changes to the
     // state and the sending of an attention are serialized by _requestLock.
@@ -54,10 +62,16 @@ internal sealed class TdsSession : IDisposable
     /// <summary>What a discovery session learned.</summary>
     private EntraInfo? _entraInfo;
 
-    private TdsSession(SqlServerConnectionSettings settings, string? spn = null, bool discovery = false)
+    private TdsSession(SqlServerConnectionSettings settings, string? spn = null, bool discovery = false, TdsSession? recoveringFrom = null)
     {
         _discovery = discovery;
         _settings = settings;
+        if (settings.SessionRecovery && !discovery)
+        {
+            _recovery = new SessionRecovery(recoveringFrom?._recovery);
+            _recoveringFrom = recoveringFrom?._recovery;
+            _recoveryFeature = recoveringFrom?._recovery?.BuildFeature(recoveringFrom.Database, recoveringFrom.DefaultCollation, recoveringFrom.Language);
+        }
         _spnOverride = spn ?? settings.ServerSpn;
         Reader = new PacketReader(Stream.Null, TdsConstants.InitialPacketSize);
         Writer = new PacketWriter(Stream.Null, TdsConstants.InitialPacketSize);
@@ -71,6 +85,9 @@ internal sealed class TdsSession : IDisposable
 
     /// <summary>Current database, as last reported by the server.</summary>
     public string Database { get; private set; } = "";
+
+    /// <summary>Current language, as last reported by the server.</summary>
+    public string Language { get; private set; } = "";
 
     /// <summary>Default collation of the current database (5 bytes), used for non-Unicode data without its own collation.</summary>
     public byte[] DefaultCollation { get; private set; } = [];
@@ -145,7 +162,8 @@ internal sealed class TdsSession : IDisposable
     /// waiting <see cref="SqlServerConnectionSettings.ConnectRetryInterval"/>,
     /// as long as the wait leaves some of the connect timeout, as SqlClient does.
     /// </summary>
-    public static TdsSession Connect(SqlServerConnectionSettings settings)
+    /// <param name="recoveringFrom">A session whose connection broke, to recreate (see <see cref="Recover"/>).</param>
+    public static TdsSession Connect(SqlServerConnectionSettings settings, TdsSession? recoveringFrom = null)
     {
         DateTime deadline = DateTime.UtcNow + settings.ConnectTimeout;
         SqlServerConnectionSettings target = settings;
@@ -153,7 +171,7 @@ internal sealed class TdsSession : IDisposable
         {
             try
             {
-                TdsSession session = ConnectRouted(target);
+                TdsSession session = ConnectRouted(target, recoveringFrom);
                 session.ConnectSettings = settings;
                 return session;
             }
@@ -186,13 +204,13 @@ internal sealed class TdsSession : IDisposable
     /// the host and port it names, within the original connect timeout. An
     /// enhanced route (ENVCHANGE 21) also names the database to log in to.
     /// </summary>
-    private static TdsSession ConnectRouted(SqlServerConnectionSettings settings)
+    private static TdsSession ConnectRouted(SqlServerConnectionSettings settings, TdsSession? recoveringFrom)
     {
         DateTime deadline = DateTime.UtcNow + settings.ConnectTimeout;
         SqlServerConnectionSettings target = settings;
         for (int routes = 0; ; routes++)
         {
-            TdsSession session = ConnectOnce(target);
+            TdsSession session = ConnectOnce(target, recoveringFrom);
             if (session.Route is not RouteInfo(string host, int port, var database))
             {
                 return session;
@@ -228,12 +246,12 @@ internal sealed class TdsSession : IDisposable
     /// <summary>Whether the server acknowledged enhanced routing (feature extension 0x0F) at login.</summary>
     public bool EnhancedRouting { get; private set; }
 
-    private static TdsSession ConnectOnce(SqlServerConnectionSettings settings)
+    private static TdsSession ConnectOnce(SqlServerConnectionSettings settings, TdsSession? recoveringFrom)
     {
         string? spn = null;
         while (true)
         {
-            var session = new TdsSession(settings, spn);
+            var session = new TdsSession(settings, spn, recoveringFrom: recoveringFrom);
             try
             {
                 session.Open();
@@ -380,7 +398,8 @@ internal sealed class TdsSession : IDisposable
 
         uint version = _settings.Encrypt == EncryptMode.Strict ? TdsConstants.Tds80Version : TdsConstants.Tds74Version;
         Writer.BeginMessage(PacketType.Login7);
-        Writer.WriteBytes(Login7.Build(_settings, version, sspiToken, fedAuthFeature, encryptedAfterLogin: _ssl != null && !loginOnlyEncryption));
+        ReadOnlySpan<byte> recoveryFeature = _recovery == null ? default : _recoveryFeature ?? SessionRecovery.RequestFeature;
+        Writer.WriteBytes(Login7.Build(_settings, version, sspiToken, fedAuthFeature, encryptedAfterLogin: _ssl != null && !loginOnlyEncryption, sessionRecovery: recoveryFeature));
         Writer.EndMessage();
 
         if (loginOnlyEncryption)
@@ -397,6 +416,7 @@ internal sealed class TdsSession : IDisposable
         }
 
         ReadLoginResponse();
+        CompleteSessionRecovery();
 
         if (_transport.CanTimeout)
         {
@@ -450,7 +470,97 @@ internal sealed class TdsSession : IDisposable
             socket.Dispose();
             throw;
         }
+        _socket = socket;
         return new NetworkStream(socket, ownsSocket: true);
+    }
+
+    /// <summary>
+    /// After login: a session the server did not acknowledge recovery for
+    /// tracks no state (and a recovery login it did not acknowledge fails);
+    /// a first login records where the session started.
+    /// </summary>
+    private void CompleteSessionRecovery()
+    {
+        if (_recovery == null || Route != null)
+        {
+            return;
+        }
+        if (!_recoveryAcknowledged)
+        {
+            _recovery = null;
+            if (_recoveringFrom != null)
+            {
+                throw new AdbcException("The server did not acknowledge session recovery when reconnecting", AdbcStatusCode.IOError);
+            }
+            return;
+        }
+        if (_recoveringFrom == null)
+        {
+            _recovery.InitialDatabase = Database;
+            _recovery.InitialLanguage = Language;
+            _recovery.InitialCollation = DefaultCollation;
+        }
+    }
+
+    /// <summary>
+    /// Whether the server's end of an idle TCP connection is still there: a
+    /// readable socket with no request outstanding means the server closed it
+    /// (or sent something unasked, which no healthy session gets). A session
+    /// marked broken is not alive; one with a request in progress (a result
+    /// still being read, whose rest is what makes the socket readable) is, and
+    /// is reported busy elsewhere. Named pipes are assumed alive; a broken one
+    /// fails on the next request.
+    /// </summary>
+    public bool IsConnectionAlive()
+    {
+        if (_broken)
+        {
+            return false;
+        }
+        lock (_requestLock)
+        {
+            if (_requestState != RequestState.Idle)
+            {
+                return true;
+            }
+        }
+        if (_socket == null)
+        {
+            return true;
+        }
+        try
+        {
+            return !_socket.Poll(0, SelectMode.SelectRead) && !_socket.Poll(0, SelectMode.SelectError);
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Whether a broken connection could be replaced by recreating this session on a new one.</summary>
+    public bool IsRecoverable => _recovery is { Recoverable: true } && TransactionDescriptor == 0;
+
+    /// <summary>Why <see cref="IsRecoverable"/> is false, for the error reporting a lost connection.</summary>
+    public string UnrecoverableReason =>
+        _recovery == null ? "the server did not acknowledge session recovery, or it is disabled"
+        : TransactionDescriptor != 0 ? "a transaction was open"
+        : !_recovery.Recoverable ? "the session had state the server cannot recover, such as temporary tables"
+        : "";
+
+    /// <summary>
+    /// Logs in again on a new connection, from the connection's original
+    /// settings (so routing happens again), with this session's recovery data:
+    /// the server recreates the session's database, language and SET options.
+    /// The isolation level this driver set, and what it learned of the
+    /// server, carry over.
+    /// </summary>
+    public TdsSession Recover()
+    {
+        TdsSession recovered = Connect(ConnectSettings, recoveringFrom: this);
+        recovered.IsolationLevel = IsolationLevel;
+        recovered.EngineEdition = EngineEdition;
+        return recovered;
     }
 
     private SslStream CreateTlsStream(Stream inner) =>
@@ -777,6 +887,8 @@ internal sealed class TdsSession : IDisposable
                 Reader.Skip(4);
                 return true;
             case TokenType.SessionState:
+                ReadSessionState();
+                return true;
             case TokenType.FedAuthInfo:
                 Reader.Skip(Reader.ReadInt32());
                 return true;
@@ -1109,6 +1221,7 @@ internal sealed class TdsSession : IDisposable
         switch (type)
         {
             case EnvChangeType.Database:
+            case EnvChangeType.Language:
             case EnvChangeType.PacketSize:
             {
                 int length = Reader.ReadByte();
@@ -1117,6 +1230,10 @@ internal sealed class TdsSession : IDisposable
                 if (type == EnvChangeType.Database)
                 {
                     Database = value;
+                }
+                else if (type == EnvChangeType.Language)
+                {
+                    Language = value;
                 }
                 else
                 {
@@ -1186,6 +1303,41 @@ internal sealed class TdsSession : IDisposable
         Reader.Skip(remaining);
     }
 
+    /// <summary>
+    /// SESSIONSTATE: a sequence number, a status (bit 0: the states that
+    /// follow are recoverable), then states, each an ID, a length (a byte, or
+    /// 0xFF and a DWORD) and a value.
+    /// </summary>
+    private void ReadSessionState()
+    {
+        int length = Reader.ReadInt32();
+        if (_recovery == null || length < 5)
+        {
+            Reader.Skip(length);
+            return;
+        }
+        uint sequence = Reader.ReadUInt32();
+        bool recoverable = (Reader.ReadByte() & 0x01) != 0;
+        length -= 5;
+        while (length > 0)
+        {
+            byte id = Reader.ReadByte();
+            int stateLength = Reader.ReadByte();
+            length -= 2;
+            if (stateLength == 0xFF)
+            {
+                stateLength = Reader.ReadInt32();
+                length -= 4;
+            }
+            if (stateLength < 0 || stateLength > length)
+            {
+                throw new TdsProtocolException("Invalid SESSIONSTATE token");
+            }
+            _recovery.Update(id, Reader.ReadByteArray(stateLength), sequence, recoverable);
+            length -= stateLength;
+        }
+    }
+
     private void ReadFeatureExtAck()
     {
         while (true)
@@ -1196,6 +1348,16 @@ internal sealed class TdsSession : IDisposable
                 return;
             }
             int length = Reader.ReadInt32();
+            if (feature == FeatureId.SessionRecovery)
+            {
+                byte[] data = Reader.ReadByteArray(length);
+                if (_recovery != null)
+                {
+                    _recoveryAcknowledged = true;
+                    _recovery.Acknowledge(data, recovered: _recoveringFrom != null);
+                }
+                continue;
+            }
             if (feature is FeatureId.Utf8Support or FeatureId.JsonSupport or FeatureId.VectorSupport or FeatureId.EnhancedRoutingSupport && length >= 1)
             {
                 byte value = Reader.ReadByte();

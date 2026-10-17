@@ -13,7 +13,7 @@ namespace Clast.Drivers.SqlServer;
 /// </summary>
 public sealed class SqlServerConnection : AdbcConnection
 {
-    private readonly TdsSession _session;
+    private TdsSession _session;
     private readonly Stack<TdsSession> _helpers = new();
     private bool _disposed;
     private SqlServerParallelQueryStream? _parallelStream;
@@ -43,15 +43,54 @@ public sealed class SqlServerConnection : AdbcConnection
     internal TdsSession Session => _session;
 
     /// <summary>
-    /// Throws if a parallel result stream is reading on this connection's
-    /// session; its workers move between partitions, so the session can look
-    /// idle while it is still in use.
+    /// Before a request: throws if a parallel result stream is reading on
+    /// this connection's session (its workers move between partitions, so the
+    /// session can look idle while it is still in use), and replaces a session
+    /// whose connection broke while idle (see <see cref="Recover"/>).
     /// </summary>
     internal void EnsureIdle()
     {
         if (Volatile.Read(ref _parallelStream) != null)
         {
             throw new AdbcException("A parallel result stream is still open; read it to the end or dispose it first", AdbcStatusCode.InvalidState);
+        }
+        if (!_session.IsConnectionAlive())
+        {
+            Recover();
+        }
+    }
+
+    /// <summary>
+    /// Session recovery: the server closed the connection of the idle
+    /// session (a failover, a gateway reset, a killed session), so log in
+    /// again with its recovery data and carry on with the new session. Helper
+    /// sessions, which likely lost their connections too, are dropped.
+    /// </summary>
+    private void Recover()
+    {
+        TdsSession broken = _session;
+        if (!broken.ConnectSettings.SessionRecovery || !broken.IsRecoverable)
+        {
+            string reason = broken.ConnectSettings.SessionRecovery ? broken.UnrecoverableReason : $"{SqlServerParameters.SessionRecovery} is off";
+            throw new AdbcException($"The connection to the server was lost, and the session cannot be recovered: {reason}", AdbcStatusCode.IOError);
+        }
+        TdsSession recovered;
+        try
+        {
+            recovered = broken.Recover();
+        }
+        catch (AdbcException ex)
+        {
+            throw new AdbcException($"The connection to the server was lost, and reconnecting failed: {ex.Message}", ex.Status, ex);
+        }
+        _session = recovered;
+        broken.Dispose();
+        lock (_helpers)
+        {
+            while (_helpers.TryPop(out TdsSession? helper))
+            {
+                helper.Dispose();
+            }
         }
     }
 
@@ -95,7 +134,14 @@ public sealed class SqlServerConnection : AdbcConnection
         {
             while (sessions.Count < count && _helpers.TryPop(out TdsSession? helper))
             {
-                sessions.Add(helper);
+                if (helper.IsConnectionAlive())
+                {
+                    sessions.Add(helper);
+                }
+                else
+                {
+                    helper.Dispose();
+                }
             }
         }
 

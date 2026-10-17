@@ -51,6 +51,15 @@ public static class SqlServerParameters
     /// <summary>Seconds to wait before retrying a login (1 to 60; default 10).</summary>
     public const string ConnectRetryInterval = "adbc.mssql.connect_retry_interval";
 
+    /// <summary>
+    /// <c>true</c> (the default) to reconnect, before the next request, a
+    /// session whose connection broke while it was idle (a failover, a
+    /// gateway reset, a killed session): the server recreates its database,
+    /// language and SET options. Not when a transaction was open, or the
+    /// session had state the server cannot recover, such as temporary tables.
+    /// </summary>
+    public const string SessionRecovery = "adbc.mssql.session_recovery";
+
     /// <summary><c>true</c> to take a table lock during bulk ingestion (<c>INSERT BULK ... WITH (TABLOCK)</c>).</summary>
     public const string IngestTableLock = "adbc.mssql.ingest.table_lock";
 
