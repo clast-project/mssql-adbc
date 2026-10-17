@@ -256,6 +256,21 @@ internal sealed class TdsSession : IDisposable
 
     private Stream OpenTransport(CancellationToken cancellationToken)
     {
+        _settings.ResolveInstance();
+        try
+        {
+            return OpenResolvedTransport(cancellationToken);
+        }
+        catch (Exception ex) when (_settings.InstanceName != null && ex is SocketException or IOException or TimeoutException or OperationCanceledException)
+        {
+            // The instance may have restarted on another port: ask the browser again next time.
+            _settings.InvalidateInstance();
+            throw;
+        }
+    }
+
+    private Stream OpenResolvedTransport(CancellationToken cancellationToken)
+    {
         if (_settings.PipeName != null)
         {
             string server = _settings.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ? "." : _settings.Host;

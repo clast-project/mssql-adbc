@@ -29,6 +29,15 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>Named pipe name (for example <c>sql\query</c>) when connecting over a pipe; otherwise null.</summary>
     public string? PipeName { get; private set; }
 
+    /// <summary>A named instance still to be resolved through the SQL Server Browser; null otherwise.</summary>
+    public string? InstanceName { get; private set; }
+
+    /// <summary>The server string asked for TCP (<c>tcp:</c>), so a named instance must resolve to a TCP port.</summary>
+    private bool _tcpOnly;
+
+    private readonly object _resolveLock = new();
+    private bool _resolved;
+
     public string Database { get; private set; } = "";
     public string? Username { get; private set; }
     public string? Password { get; private set; }
@@ -135,6 +144,21 @@ internal sealed class SqlServerConnectionSettings
     {
         string value = server.Trim();
 
+        if (value.StartsWith("np:", StringComparison.OrdinalIgnoreCase) && !value.StartsWith(@"np:\\", StringComparison.Ordinal))
+        {
+            // np:host or np:host\instance: the instance's standard pipe; no browser needed.
+            string target = value.Substring(3);
+            int slash = target.IndexOf('\\');
+            string? instance = slash >= 0 ? target.Substring(slash + 1) : null;
+            if (instance is "")
+            {
+                throw InvalidOption(SqlServerParameters.Server, server);
+            }
+            Host = NormalizeHost(slash >= 0 ? target.Substring(0, slash) : target);
+            PipeName = instance == null || IsDefaultInstance(instance) ? @"sql\query" : $@"MSSQL${instance}\sql\query";
+            return;
+        }
+
         if (value.StartsWith("np:", StringComparison.OrdinalIgnoreCase))
         {
             // np:\\host\pipe\name
@@ -153,24 +177,89 @@ internal sealed class SqlServerConnectionSettings
         if (value.StartsWith("tcp:", StringComparison.OrdinalIgnoreCase))
         {
             value = value.Substring(4);
+            _tcpOnly = true;
         }
 
+        bool explicitPort = false;
         int comma = value.IndexOf(',');
         if (comma >= 0)
         {
             Port = ParseInt(SqlServerParameters.Server, value.Substring(comma + 1).Trim());
             value = value.Substring(0, comma).Trim();
+            explicitPort = true;
         }
 
-        if (value.Contains('\\'))
+        int backslash = value.IndexOf('\\');
+        if (backslash >= 0)
         {
-            // Resolving a named instance needs the SQL Browser (SSRP); not yet supported.
-            throw new AdbcException(
-                $"Named instances are not yet supported; specify the port instead ('{server}')",
-                AdbcStatusCode.NotImplemented);
+            // host\instance: resolved through the SQL Server Browser when connecting, unless a
+            // port was given or it is the default instance.
+            string instance = value.Substring(backslash + 1).Trim();
+            if (instance.Length == 0 || instance.Contains('\\'))
+            {
+                throw InvalidOption(SqlServerParameters.Server, server);
+            }
+            if (value.StartsWith("(localdb)", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new AdbcException("LocalDB is not yet supported", AdbcStatusCode.NotImplemented);
+            }
+            value = value.Substring(0, backslash).Trim();
+            if (!explicitPort && !IsDefaultInstance(instance))
+            {
+                InstanceName = instance;
+            }
         }
 
         Host = NormalizeHost(value);
+    }
+
+    /// <summary>MSSQLSERVER names the default instance, as with Microsoft's native client.</summary>
+    private static bool IsDefaultInstance(string instance) => string.Equals(instance, "MSSQLSERVER", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Resolves a named instance to its TCP port (or, unless TCP was asked for,
+    /// its named pipe) through the SQL Server Browser. Done once per settings,
+    /// so the helper sessions of parallel reads reuse it.
+    /// </summary>
+    public void ResolveInstance()
+    {
+        if (InstanceName == null)
+        {
+            return;
+        }
+        lock (_resolveLock)
+        {
+            if (_resolved)
+            {
+                return;
+            }
+            SqlBrowser.Instance instance = SqlBrowser.Resolve(Host, InstanceName, ConnectTimeout);
+            if (instance.TcpPort is int port)
+            {
+                Port = port;
+                PipeName = null;
+            }
+            else if (!_tcpOnly && instance.PipeName != null)
+            {
+                PipeName = instance.PipeName;
+            }
+            else
+            {
+                throw new AdbcException(
+                    $"Instance '{InstanceName}' on '{Host}' does not accept TCP connections{(_tcpOnly ? "" : " or named pipes")}",
+                    AdbcStatusCode.IOError);
+            }
+            _resolved = true;
+        }
+    }
+
+    /// <summary>Forgets a resolved endpoint (after connecting to it failed), so the next connection asks the browser again.</summary>
+    public void InvalidateInstance()
+    {
+        lock (_resolveLock)
+        {
+            _resolved = false;
+        }
     }
 
     public static int ParseParallelReads(string value)

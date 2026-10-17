@@ -14,6 +14,7 @@ namespace Clast.Drivers.SqlServer.Tests;
 /// GetInfo, GetTableTypes, GetTableSchema and GetObjects, against tables
 /// created in tempdb for the test class.
 /// </summary>
+[Collection(CatalogCollection.Name)]
 public sealed class MetadataTests : IDisposable
 {
     private readonly string _prefix = "clast_meta_" + Guid.NewGuid().ToString("N")[..8] + "_";

@@ -9,6 +9,7 @@ using Xunit;
 
 namespace Clast.Drivers.SqlServer.Tests;
 
+[Collection(CatalogCollection.Name)]
 public sealed class StatisticsTests : IDisposable
 {
     private readonly string _table = "clast_stats_" + Guid.NewGuid().ToString("N")[..8];

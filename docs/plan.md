@@ -77,6 +77,24 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
   `Directory.Build.props`; expected to become a submodule.
 - net10.0 only for now; netstandard2.0 later, without shaping today's design.
 
+## Server strings (`adbc.mssql.server`)
+
+| Form | Meaning |
+|---|---|
+| `host`, `host,port`, `tcp:host[,port]` | TCP; `.`, `(local)` and `localhost` mean this machine |
+| `host\instance` | named instance, resolved with the SQL Server Browser (SSRP, UDP 1434): TCP if the instance listens on it, else its named pipe |
+| `tcp:host\instance` | named instance over TCP only |
+| `host\instance,port` | the given port; no browser lookup |
+| `host\MSSQLSERVER` | the default instance; no browser lookup |
+| `np:host`, `np:host\instance` | the standard pipe (`sql\query` or `MSSQL$instance\sql\query`) |
+| `np:\host\pipe\name` | an explicit pipe |
+
+The browser is asked at all of the host's addresses at once, again each
+second until the connect timeout, and the result is reused by the
+connection's helper sessions (parallel reads). A failed connection to a
+resolved port clears it, so a restarted instance is found again. LocalDB is
+not yet supported.
+
 ## Type mapping
 
 | SQL Server | Arrow | Notes |
