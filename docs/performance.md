@@ -69,6 +69,9 @@ run:
 - the CPU the server ran the request on, sampled every 5 ms from
   `sys.dm_exec_requests`.
 
+These modes need SQL Server's DMVs and refuse to run against a warehouse;
+`--analyze client` (below) compares the drivers there.
+
 `--analyze profile N full|login` is a steady loop for `dotnet-trace`.
 `--analyze encode [iterations]` measures bulk-load encoding alone, without a
 TLS, socket or server cost (see Ingest encoders).

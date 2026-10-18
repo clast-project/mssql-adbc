@@ -59,6 +59,14 @@ internal static class Analysis
     {
         string mode = args.Length > 1 ? args[1] : "read";
         int iterations = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 8;
+        // The DMV-based modes need SQL Server's sys.dm_exec_* and sys.dm_os_schedulers views.
+        if (mode is not ("encode" or "client" or "profile") && BenchmarkData.Warehouse)
+        {
+            Console.Error.WriteLine(
+                $"--analyze {mode} reads SQL Server DMVs that a warehouse does not have; use --analyze client to compare drivers there");
+            Environment.ExitCode = 1;
+            return;
+        }
         BenchmarkData.EnsureTable(Rows);
         // Optional placement control: the server CPU every measured session must run on
         // (MSSQL_BENCH_SERVER_CPU, see ServerPlacement), and the client CPUs.
@@ -459,7 +467,9 @@ internal static class Analysis
 
     // ---- Ingest ----
 
-    private const string Target = "dbo.bench_ingest_target";
+    private static string TargetName => BenchmarkData.Prefix + "ingest_target";
+
+    private static string Target => "dbo." + TargetName;
 
     private static List<Case> IngestCases(SqlConnection observer, List<IDisposable> disposables)
     {
@@ -507,7 +517,7 @@ internal static class Analysis
                 cases.Add(new Case($"Clast tablock={tl}{(packetSize != null ? " pkt=" + packetSize : "")}", () => session, () =>
                 {
                     using AdbcStatement statement = clast.CreateStatement();
-                    statement.SetOption(AdbcOptions.Ingest.TargetTable, "bench_ingest_target");
+                    statement.SetOption(AdbcOptions.Ingest.TargetTable, TargetName);
                     statement.SetOption(AdbcOptions.Ingest.TargetDbSchema, "dbo");
                     statement.SetOption(AdbcOptions.Ingest.Mode, AdbcOptions.IngestMode.Append);
                     statement.SetOption(SqlServerParameters.IngestTableLock, tl ? "true" : "false");
