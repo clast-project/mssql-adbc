@@ -113,6 +113,14 @@ public static class SqlServerParameters
     /// </summary>
     public const string EngineEdition = "adbc.mssql.engine_edition";
 
+    /// <summary>
+    /// How hierarchyid columns are read: <c>text</c> (the default), as
+    /// <c>ToString()</c> formats them (<c>/1/2.5/</c>), or <c>binary</c>, their
+    /// serialized bytes, which are shorter and sort in tree (depth-first)
+    /// order where the text does not. Ingest takes either form.
+    /// </summary>
+    public const string HierarchyId = "adbc.mssql.hierarchyid";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 

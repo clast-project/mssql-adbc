@@ -20,7 +20,8 @@ internal static class DecoderFactory
     public static readonly Time64Type Time = new Time64Type(TimeUnit.Nanosecond);
     public static readonly TimestampWithOffsetType TimestampWithOffset = new TimestampWithOffsetType(TimeUnit.Microsecond);
 
-    public static ColumnDecoder Create(TdsColumn column, int capacity, byte[] defaultCollation)
+    /// <param name="hierarchyIdText">Whether hierarchyid columns are read as text (<c>/1/2/</c>) rather than their serialized bytes.</param>
+    public static ColumnDecoder Create(TdsColumn column, int capacity, byte[] defaultCollation, bool hierarchyIdText)
     {
         switch (column.Type)
         {
@@ -78,10 +79,12 @@ internal static class DecoderFactory
             case TdsDataType.Json:
                 return new VariableDecoder(column, JsonType.Default, capacity, defaultCollation);
 
+            case TdsDataType.Udt when hierarchyIdText && IsHierarchyId(column):
+                return new VariableDecoder(column, StringType.Default, capacity, defaultCollation, hierarchyIdText: true);
             case TdsDataType.BigVarBinary:
             case TdsDataType.BigBinary:
             case TdsDataType.Image:
-            case TdsDataType.Udt: // hierarchyid, geometry, geography: their serialized bytes
+            case TdsDataType.Udt: // geometry, geography, other CLR types (and hierarchyid as binary): their serialized bytes
                 return new VariableDecoder(column, BinaryType.Default, capacity, defaultCollation);
 
             case TdsDataType.Vector:
@@ -109,6 +112,9 @@ internal static class DecoderFactory
                 throw Unsupported(column);
         }
     }
+
+    public static bool IsHierarchyId(TdsColumn column) =>
+        string.Equals(column.UdtTypeName, "hierarchyid", StringComparison.OrdinalIgnoreCase);
 
     public static Field CreateField(ColumnDecoder decoder)
     {

@@ -294,8 +294,25 @@ internal static class SqlServerBulkIngest
     {
         EngineEdition.Warehouse => WarehouseType(field),
         EngineEdition.SynapseDedicated when field.DataType is JsonType => "nvarchar(max)",
-        _ => SqlType(field),
+        EngineEdition.SynapseDedicated => SqlType(field),
+        _ => SqlServerType(field) ?? SqlType(field),
     };
+
+    /// <summary>
+    /// xml and hierarchyid, which Arrow has no types for, from the field's
+    /// <c>MSSQL:type</c> metadata, as the driver reads them: xml from a string
+    /// field, hierarchyid from a string (its text form) or binary field. The
+    /// analytics engines have neither type.
+    /// </summary>
+    private static string? SqlServerType(Field field) =>
+        field.Metadata != null && field.Metadata.TryGetValue(DecoderFactory.SqlTypeMetadataKey, out string? name)
+            ? (name.ToUpperInvariant(), field.DataType) switch
+            {
+                ("XML", StringType) => "xml",
+                ("HIERARCHYID", StringType or BinaryType) => "hierarchyid",
+                _ => null,
+            }
+            : null;
 
     private static string WarehouseType(Field field) => field.DataType switch
     {

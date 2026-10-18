@@ -149,7 +149,7 @@ internal static class SqlServerMetadata
         session.DrainResponse(columns);
         return new Schema(columns.Select(c =>
         {
-            using ColumnDecoder decoder = DecoderFactory.Create(c, 1, session.DefaultCollation);
+            using ColumnDecoder decoder = DecoderFactory.Create(c, 1, session.DefaultCollation, session.Settings.HierarchyIdText);
             return DecoderFactory.CreateField(decoder);
         }), null);
     }

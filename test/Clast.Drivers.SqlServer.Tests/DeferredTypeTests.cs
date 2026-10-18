@@ -170,20 +170,18 @@ public sealed class DeferredTypeTests : IDisposable
     }
 
     [SkippableFact]
-    public void ClrTypesAreTheirSerializedBytes()
+    public void SpatialTypesAreTheirSerializedBytes()
     {
         var (schema, batch) = ReadOne("""
-            SELECT h, CAST(h AS varbinary(892)) AS hb, g, CAST(g AS varbinary(max)) AS gb, n
-            FROM (VALUES (1, hierarchyid::Parse('/1/2/'), geometry::Point(1, 2, 0)), (2, NULL, NULL)) AS t(n, h, g) ORDER BY n
+            SELECT g, CAST(g AS varbinary(max)) AS gb, n
+            FROM (VALUES (1, geometry::Point(1, 2, 0)), (2, NULL)) AS t(n, g) ORDER BY n
             """);
         using (batch)
         {
             Assert.IsType<BinaryType>(schema.FieldsList[0].DataType);
-            Assert.Equal("HIERARCHYID", schema.FieldsList[0].Metadata[DecoderFactory.SqlTypeMetadataKey]);
-            Assert.Equal("GEOMETRY", schema.FieldsList[2].Metadata[DecoderFactory.SqlTypeMetadataKey]);
+            Assert.Equal("GEOMETRY", schema.FieldsList[0].Metadata[DecoderFactory.SqlTypeMetadataKey]);
             Assert.Equal(((BinaryArray)batch.Column(1)).GetBytes(0).ToArray(), ((BinaryArray)batch.Column(0)).GetBytes(0).ToArray());
-            Assert.Equal(((BinaryArray)batch.Column(3)).GetBytes(0).ToArray(), ((BinaryArray)batch.Column(2)).GetBytes(0).ToArray());
-            Assert.True(batch.Column(0).IsNull(1) && batch.Column(2).IsNull(1));
+            Assert.True(batch.Column(0).IsNull(1));
         }
     }
 
@@ -248,7 +246,7 @@ public sealed class DeferredTypeTests : IDisposable
             {
                 Assert.Equal("HIERARCHYID", schema.FieldsList[4].Metadata[DecoderFactory.SqlTypeMetadataKey]);
                 AssertSameRows(source, copy);
-                Assert.Equal(((BinaryArray)source.Column("h")).GetBytes(1).ToArray(), ((BinaryArray)copy.Column("h")).GetBytes(1).ToArray());
+                Assert.Equal("/1/2/", ((StringArray)copy.Column("h")).GetString(1));
                 Assert.Equal(((BinaryArray)source.Column("g")).GetBytes(1).ToArray(), ((BinaryArray)copy.Column("g")).GetBytes(1).ToArray());
             }
 

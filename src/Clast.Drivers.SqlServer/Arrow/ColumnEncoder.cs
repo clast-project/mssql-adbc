@@ -120,6 +120,9 @@ internal static class EncoderFactory
             TdsDataType.BigVarChar or TdsDataType.BigChar when text => new StringEncoder(target, sourceIndex, target.Collation),
             TdsDataType.Vector when IsFloatList(type, target.VectorDimensions) => new VectorEncoder(target, sourceIndex),
             TdsDataType.Variant when type is VariantType => new VariantEncoder(target, sourceIndex, defaultCollation ?? []),
+            // xml and hierarchyid targets, sent as varbinary: UTF-8 text as is, and hierarchyid's text form serialized.
+            TdsDataType.BigVarBinary when type is StringType && target.TableType == TdsDataType.Xml => new BinaryEncoder(target, sourceIndex),
+            TdsDataType.BigVarBinary when type is StringType && DecoderFactory.IsHierarchyId(target) => new HierarchyIdEncoder(target, sourceIndex),
             TdsDataType.BigVarBinary or TdsDataType.BigBinary when type is BinaryType => new BinaryEncoder(target, sourceIndex),
             TdsDataType.Guid when type is GuidType || type is FixedSizeBinaryType { ByteWidth: 16 } => new GuidEncoder(target, sourceIndex),
             TdsDataType.DateN when type is Date32Type or Date64Type || type is TimestampType => new TemporalEncoder(target, sourceIndex, type),
@@ -513,6 +516,45 @@ internal sealed unsafe class BinaryEncoder : ColumnEncoder
         }
         int start = _offsets[row];
         StringEncoder.WriteValue(writer, new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start), _plp);
+    }
+}
+
+/// <summary>Text (<c>/1/2.5/</c>) into hierarchyid, sent as its serialized bytes.</summary>
+internal sealed unsafe class HierarchyIdEncoder : ColumnEncoder
+{
+    private readonly bool _plp;
+    private readonly byte[] _bytes = new byte[HierarchyId.MaxBytes];
+    private int* _offsets;
+    private byte* _data;
+
+    public HierarchyIdEncoder(TdsColumn target, int sourceIndex) : base(target, sourceIndex)
+    {
+        _plp = target.LengthKind == TdsLengthKind.Plp;
+    }
+
+    public override void Bind(IArrowArray array)
+    {
+        BindNulls(array);
+        _offsets = (int*)Pin(array.Data.Buffers[1]) + array.Offset;
+        _data = Pin(array.Data.Buffers[2]);
+    }
+
+    public override void Write(PacketWriter writer, int row)
+    {
+        if (IsNullAt(row))
+        {
+            StringEncoder.WriteNull(writer, _plp);
+            return;
+        }
+        int start = _offsets[row];
+        var text = new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start);
+        if (!HierarchyId.TryParse(text, _bytes, out int length, out string? error))
+        {
+            throw new AdbcException(
+                $"Value in row {row} is not a hierarchyid for column '{Target.Name}': {error}",
+                AdbcStatusCode.InvalidData);
+        }
+        StringEncoder.WriteValue(writer, _bytes.AsSpan(0, length), _plp);
     }
 }
 

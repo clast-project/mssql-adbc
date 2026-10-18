@@ -384,7 +384,7 @@ public class QueryTests
     {
         // Every type SQL Server 2025 returns is supported; a type without a decoder still fails cleanly.
         var column = Clast.Drivers.SqlServer.Tds.TdsColumn.Create("c", Clast.Drivers.SqlServer.Tds.TdsDataType.Null, 0);
-        var ex = Assert.ThrowsAny<AdbcException>(() => Clast.Drivers.SqlServer.Arrow.DecoderFactory.Create(column, 16, []));
+        var ex = Assert.ThrowsAny<AdbcException>(() => Clast.Drivers.SqlServer.Arrow.DecoderFactory.Create(column, 16, [], true));
         Assert.Equal(AdbcStatusCode.NotImplemented, ex.Status);
     }
 

@@ -47,7 +47,7 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
         var fields = new List<Field>(columns.Length);
         for (int i = 0; i < columns.Length; i++)
         {
-            _decoders[i] = DecoderFactory.Create(columns[i], _batchRows, session.DefaultCollation);
+            _decoders[i] = DecoderFactory.Create(columns[i], _batchRows, session.DefaultCollation, session.Settings.HierarchyIdText);
             fields.Add(DecoderFactory.CreateField(_decoders[i]));
         }
         Schema = new Schema(fields, null);

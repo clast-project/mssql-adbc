@@ -251,10 +251,12 @@ resume a TDS 7.x connection's TLS 1.2 session.
 | bit | bool | |
 | decimal(p,s), numeric(p,s) | decimal128(p,s) | |
 | money, smallmoney | decimal128(19,4), decimal128(10,4) | |
-| char, varchar, nchar, nvarchar (incl. max), text, ntext, xml | utf8 | varchar/text decoded from the column's code page; UTF-8 collations pass through |
+| char, varchar, nchar, nvarchar (incl. max), text, ntext | utf8 | varchar/text decoded from the column's code page; UTF-8 collations pass through |
+| xml | utf8 | Arrow has no XML type. Ingested as the UTF-8 text in varbinary(max), which the server parses as XML, so an `encoding="utf-8"` declaration holds |
 | json | `arrow.json` (utf8) | native transport (feature extension 0x0D): UTF-8 on the wire. Ingested as nvarchar(max), which the server converts |
 | binary, varbinary (incl. max), image, timestamp/rowversion | binary | |
-| hierarchyid, geometry, geography, other CLR types | binary | serialized bytes; type name in `MSSQL:type`. Ingested as varbinary. A friendlier form (hierarchyid as text, spatial as WKB) is still open |
+| hierarchyid | utf8 | text form (`/1/2.5/-3/`), converted on the client (`Arrow/HierarchyId.cs`). `adbc.mssql.hierarchyid=binary` keeps the serialized bytes, which are shorter and sort in tree order where the text does not. Ingest takes either |
+| geometry, geography, other CLR types | binary | serialized bytes; type name in `MSSQL:type`. Ingested as varbinary. Spatial as WKB is #2 |
 | vector(n) | fixed_size_list&lt;float32&gt;[n] | native transport (0x0E); float32 elements only. Ingest also accepts list&lt;float32&gt; of the right length |
 | date | date32 | |
 | time(s) | time64[ns] | |
@@ -269,7 +271,9 @@ smallint, decimal4/8/16 → decimal(9/18/38), timestamps → datetime2(6) or
 datetimeoffset(6) at +00:00, string → nvarchar, binary → varbinary); objects
 and arrays are rejected. Bound parameters accept the same types (json as
 nvarchar). Create mode makes sql_variant, json and vector(n) columns from
-those Arrow types.
+those Arrow types, and xml and hierarchyid columns from string (or, for
+hierarchyid, binary) fields whose `MSSQL:type` says so, as the driver reads
+them; not on Synapse or Fabric, which have neither type.
 
 ## ADBC 1.1 coverage
 

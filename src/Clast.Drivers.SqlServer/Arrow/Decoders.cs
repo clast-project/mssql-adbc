@@ -264,6 +264,7 @@ internal sealed class VariableDecoder : ColumnDecoder
         Utf16,
         Utf8,
         CodePage,
+        HierarchyId,
     }
 
     private readonly Encoding _encoding;
@@ -276,7 +277,8 @@ internal sealed class VariableDecoder : ColumnDecoder
     private byte[] _scratch = [];
     private char[] _chars = [];
 
-    public VariableDecoder(TdsColumn column, IArrowType arrowType, int capacity, byte[] defaultCollation)
+    /// <param name="hierarchyIdText">For a hierarchyid column: decode to its text form rather than keep its serialized bytes.</param>
+    public VariableDecoder(TdsColumn column, IArrowType arrowType, int capacity, byte[] defaultCollation, bool hierarchyIdText = false)
         : base(column, arrowType)
     {
         _plp = column.LengthKind == TdsLengthKind.Plp;
@@ -286,7 +288,7 @@ internal sealed class VariableDecoder : ColumnDecoder
             TdsDataType.NVarChar or TdsDataType.NChar or TdsDataType.Xml or TdsDataType.NText => Encoding.Utf16,
             TdsDataType.BigVarChar or TdsDataType.BigChar or TdsDataType.Text => Encoding.CodePage,
             TdsDataType.Json => Encoding.Utf8,
-            _ => Encoding.Binary,
+            _ => hierarchyIdText ? Encoding.HierarchyId : Encoding.Binary,
         };
 
         if (_encoding == Encoding.CodePage)
@@ -398,9 +400,21 @@ internal sealed class VariableDecoder : ColumnDecoder
             case Encoding.CodePage:
                 AppendCodePage(bytes);
                 break;
+            case Encoding.HierarchyId:
+                AppendHierarchyId(bytes);
+                break;
         }
         AppendOffset();
         _validity.AppendValid();
+    }
+
+    private void AppendHierarchyId(ReadOnlySpan<byte> bytes)
+    {
+        if (!HierarchyId.TryFormat(bytes, _data.GetSpan(HierarchyId.MaxTextLength(bytes.Length)), out int written))
+        {
+            throw new TdsProtocolException($"Column '{Column.Name}' holds a value that is not a valid hierarchyid");
+        }
+        _data.Advance(written);
     }
 
     private void AppendUtf16(ReadOnlySpan<byte> bytes)

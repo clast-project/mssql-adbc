@@ -111,6 +111,9 @@ internal sealed class TdsColumn
     /// <summary>The column type to declare in INSERT BULK, when it differs from <see cref="SqlTypeName"/>.</summary>
     private string? _bulkTypeName;
 
+    /// <summary>For a bulk-load target, the table column's own type, which <see cref="Type"/> (the type sent) may differ from.</summary>
+    public TdsDataType TableType { get; private set; }
+
     /// <summary>The column type declared in INSERT BULK.</summary>
     public string BulkTypeName => _bulkTypeName ?? SqlTypeName;
 
@@ -380,6 +383,7 @@ internal sealed class TdsColumn
 
         var target = (TdsColumn)MemberwiseClone();
         target.Type = type;
+        target.TableType = Type;
         if (LengthKind == TdsLengthKind.Fixed)
         {
             target.LengthKind = TdsLengthKind.ByteLength;
@@ -395,6 +399,14 @@ internal sealed class TdsColumn
                 target.Type = TdsDataType.NVarChar;
                 target.Collation = new byte[5];
                 target._bulkTypeName = "nvarchar(max)";
+                break;
+            case TdsDataType.Xml:
+                // Sent and declared as varbinary(max) holding the UTF-8 text, which the server parses
+                // as XML: no transcoding, and an encoding="utf-8" declaration in the text stays true
+                // (UTF-16 text with that declaration fails with 9402, "unable to switch the encoding").
+                target.Type = TdsDataType.BigVarBinary;
+                target.Collation = [];
+                target._bulkTypeName = "varbinary(max)";
                 break;
             case TdsDataType.Udt:
                 // Sent as the type's serialized bytes.

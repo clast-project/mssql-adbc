@@ -67,6 +67,8 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>Whether to request session recovery, and so reconnect a session whose connection broke while idle.</summary>
     public bool SessionRecovery { get; private set; } = true;
     public int BatchRows { get; private set; } = 65536;
+    /// <summary>Whether hierarchyid columns are read as text (<c>/1/2/</c>); otherwise as their serialized bytes.</summary>
+    public bool HierarchyIdText { get; private set; } = true;
     public int ParallelReads { get; private set; } = 1;
     public string? ServerSpn { get; private set; }
 
@@ -173,6 +175,15 @@ internal sealed class SqlServerConnectionSettings
                 throw InvalidOption(SqlServerParameters.BatchRows, batchRows);
             }
             settings.BatchRows = rows;
+        }
+        if (options.TryGetValue(SqlServerParameters.HierarchyId, out string? hierarchyId))
+        {
+            settings.HierarchyIdText = hierarchyId.ToLowerInvariant() switch
+            {
+                "text" => true,
+                "binary" => false,
+                _ => throw InvalidOption(SqlServerParameters.HierarchyId, hierarchyId),
+            };
         }
 
         if (options.TryGetValue(SqlServerParameters.ServerSpn, out string? spn) && spn.Length > 0)
