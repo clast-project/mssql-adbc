@@ -235,12 +235,60 @@ CPU is this process's, all threads.
 | SqlBulkCopy | 20509 (20406-20612) | 969 (953-984) |
 | Clast | 15325 (15226-15423) | 250 (250-250) |
 
-Reads are bound by the service and the network: all three take about 30
+Reads are bound by the service (see below): all three take about 30
 seconds, and the differences are within run-to-run variation, except Go's.
 The client cost is not: Clast uses 0.43x SqlClient's CPU and 0.05x Go's.
 Ingest is 25% faster than SqlBulkCopy, at a quarter of the CPU. The Go driver
 bulk-loads a warehouse only by staging through Azure storage
 (`mssql.ingest.storage_account`), so it has no ingest figure here.
+
+### Where a warehouse read's time goes
+
+Measured on 2026-10-18 from this machine (wired 1 Gbps, about 30-38 ms from
+the Fabric gateway), reading `clast_bench_types_1000000` with Clast; the
+probe counts bytes on the physical adapter (`netstat -e` totals the virtual
+adapters too and reports about 4x).
+
+- **Volume:** 158 MB arrives for 1M rows, about 148 bytes per row, as the
+  TDS packet trace also shows. Nothing is inflated on the wire.
+- **Server work:** the first batch arrives after about 3 s. Fabric's
+  `queryinsights.exec_requests_history` shows 1-2 s of CPU per full read,
+  and a scan with aggregates over the table takes about 1 s. The server's
+  elapsed time matches the client's: it waits on sending, not computing.
+- **Transfer:** the other 25 s or so, at 5.2-6.6 MB/s (about 50 Mbit/s).
+
+That rate is a limit of the warehouse's result path (its frontend or the
+gateway in front of it), not of the client or its network:
+
+- **Not the link:** single downloads from unrelated hosts reach 46-60 MB/s
+  here, receive-window auto-tuning is on, and the client uses about 0.3 s of
+  CPU per read.
+- **Not the packet size or TLS:** 4 KB, 8 KB and 16 KB packets (Fabric grants
+  16290 bytes when asked for 32767) and strict (TDS 8) encryption all give
+  the same rate.
+- **Not the storage or the row shape:** generated rows that read no table
+  stream at the same 6-8 MB/s, and so does `id` alone (9 MB at about
+  6 MB/s): the limit is bytes per second, not rows.
+- **Shared across a client's connections:** connections go through a
+  regional gateway to one warehouse frontend. Two concurrent connections
+  share the 6.5 MB/s one gets alone, whether they read halves of the table
+  or all of it each; they take turns rather than run side by side, whichever
+  gateway instance they pass through. Whether the share is per client or per
+  capacity can't be told from outside.
+
+Parallel reads, which open one session per stream, raise the total but far
+less than linearly:
+
+| `adbc.mssql.parallel_reads` | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| Wall s | 27.0 | 25.7 | 19.5 | 14.9 | 13.2 |
+| MB/s | 6.6 | 7.0 | 9.6 | 12.4 | 13.6 |
+
+So against a warehouse, a large read is best made with `parallel_reads` of 8
+to 16 on an integer column, which about halves the time. No driver can make
+one stream faster; for bulk extraction, reading the table's Parquet files
+from OneLake avoids this path. Measuring from an Azure VM in the region
+would show whether the limit is distance or the service itself.
 
 ## What would make single-stream reads faster
 
