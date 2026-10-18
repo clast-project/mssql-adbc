@@ -12,7 +12,7 @@ public sealed class NamedPipeTests
 {
     /// <summary>
     /// A server that closes a new pipe connection before answering PRELOGIN
-    /// (LocalDB does so now and then) gets one more try on a new connection.
+    /// (LocalDB does so now and then) gets three more tries on new connections.
     /// </summary>
     [SkippableFact]
     public async Task RetriesAPipeClosedBeforePreLogin()
@@ -52,7 +52,7 @@ public sealed class NamedPipeTests
         };
         AdbcException ex = Assert.ThrowsAny<AdbcException>(() => new SqlServerDriver().Open(options).Connect(null));
         Assert.Contains("closed the connection", ex.Message);
-        Assert.Equal(2, Volatile.Read(ref accepted));
+        Assert.Equal(4, Volatile.Read(ref accepted));
 
         stop.Cancel();
         await server;

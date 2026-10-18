@@ -248,10 +248,13 @@ internal sealed class TdsSession : IDisposable
     /// <summary>Whether the server acknowledged enhanced routing (feature extension 0x0F) at login.</summary>
     public bool EnhancedRouting { get; private set; }
 
+    /// <summary>Pauses before each retry of a named pipe closed before PRELOGIN (see <see cref="ConnectOnce"/>).</summary>
+    private static readonly TimeSpan[] PipeRetryDelays = [TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(1)];
+
     private static TdsSession ConnectOnce(SqlServerConnectionSettings settings, TdsSession? recoveringFrom)
     {
         string? spn = null;
-        bool pipeRetried = false;
+        int pipeRetries = 0;
         while (true)
         {
             var session = new TdsSession(settings, spn, recoveringFrom: recoveringFrom);
@@ -269,11 +272,12 @@ internal sealed class TdsSession : IDisposable
                     continue;
                 }
                 // A server can close a new named-pipe connection before answering PRELOGIN
-                // (LocalDB does, now and then, as other clients' connections close). Nothing
-                // has been sent but PRELOGIN, so try once more on a new connection.
-                if (session._pipeClosedBeforePreLogin && !pipeRetried)
+                // (LocalDB does, now and then, as other clients' connections close; on CI twice
+                // in a row). Nothing has been sent but PRELOGIN, so try again on a new
+                // connection, after a short pause that grows.
+                if (session._pipeClosedBeforePreLogin && pipeRetries < PipeRetryDelays.Length)
                 {
-                    pipeRetried = true;
+                    Thread.Sleep(PipeRetryDelays[pipeRetries++]);
                     continue;
                 }
                 if (ex is AdbcException)
