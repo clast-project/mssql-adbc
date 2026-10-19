@@ -260,6 +260,94 @@ public class IngestTests
         Assert.Equal(0, Assert.Single(QueryTests.ReadAdbc(connection, "SELECT COUNT(*) FROM #clast_fail", out _, out _))[0]);
     }
 
+    [SkippableTheory]
+    [InlineData(0)]
+    [InlineData(1000)]  // splits inside the stream's batches
+    [InlineData(2500)]  // ends exactly on each of the stream's batches
+    [InlineData(7500)]  // exactly the rows
+    [InlineData(100000)]
+    public void BatchSizeSplitsRows(int batchSize)
+    {
+        using AdbcConnection connection = Connect();
+        var list = new List<RecordBatch>();
+        for (int b = 0; b < 3; b++)
+        {
+            int start = b * 2500;
+            list.Add(new RecordBatch.Builder()
+                .Append("id", false, c => c.Int64(x => x.AppendRange(Enumerable.Range(start, 2500).Select(i => (long)i))))
+                .Build());
+        }
+
+        using (AdbcStatement statement = connection.BulkIngest(null, null, "clast_batched", BulkIngestMode.Create, true))
+        {
+            statement.SetOption(SqlServerParameters.IngestBatchSize, batchSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            statement.BindStream(new ListStream(list));
+            Assert.Equal(7500, statement.ExecuteUpdate().AffectedRows);
+        }
+
+        List<object?[]> summary = QueryTests.ReadAdbc(connection, "SELECT COUNT(*), SUM(id) FROM #clast_batched", out _, out _);
+        Assert.Equal(new object?[] { 7500, 7500L * 7499 / 2 }, summary[0]);
+    }
+
+    [SkippableFact]
+    public void BatchSizeKeepsEarlierBatchesOnFailure()
+    {
+        using AdbcConnection connection = Connect();
+        Execute(connection, "CREATE TABLE #clast_batch_fail (v tinyint NULL)");
+        var batch = new RecordBatch.Builder()
+            .Append("v", true, c => c.Int32(b => b.AppendRange(Enumerable.Range(0, 20000).Select(i => i == 15000 ? 300 : i % 200))))
+            .Build();
+
+        using (AdbcStatement statement = connection.BulkIngest(null, null, "clast_batch_fail", BulkIngestMode.Append, true))
+        {
+            statement.SetOption(SqlServerParameters.IngestBatchSize, "10000");
+            statement.Bind(batch, batch.Schema);
+            var ex = Assert.ThrowsAny<AdbcException>(() => statement.ExecuteUpdate());
+            Assert.Equal(AdbcStatusCode.InvalidData, ex.Status);
+        }
+
+        // The first batch was committed, and the session still works.
+        Assert.Equal(10000, Assert.Single(QueryTests.ReadAdbc(connection, "SELECT COUNT(*) FROM #clast_batch_fail", out _, out _))[0]);
+    }
+
+    [SkippableFact]
+    public void BatchSizeInsideTransactionRollsBack()
+    {
+        using AdbcConnection connection = Connect();
+        Execute(connection, "CREATE TABLE #clast_batch_tx (v int NOT NULL)");
+        var batch = new RecordBatch.Builder()
+            .Append("v", false, c => c.Int32(b => b.AppendRange(Enumerable.Range(0, 5000))))
+            .Build();
+
+        connection.AutoCommit = false;
+        using (AdbcStatement statement = connection.BulkIngest(null, null, "clast_batch_tx", BulkIngestMode.Append, true))
+        {
+            statement.SetOption(SqlServerParameters.IngestBatchSize, "1000");
+            statement.Bind(batch, batch.Schema);
+            Assert.Equal(5000, statement.ExecuteUpdate().AffectedRows);
+        }
+        Assert.Equal(5000, Assert.Single(QueryTests.ReadAdbc(connection, "SELECT COUNT(*) FROM #clast_batch_tx", out _, out _))[0]);
+        connection.Rollback();
+        connection.AutoCommit = true;
+
+        Assert.Equal(0, Assert.Single(QueryTests.ReadAdbc(connection, "SELECT COUNT(*) FROM #clast_batch_tx", out _, out _))[0]);
+    }
+
+    [SkippableFact]
+    public void BatchSizeOptionIsValidated()
+    {
+        using AdbcConnection connection = Connect();
+        using AdbcStatement statement = connection.CreateStatement();
+        Assert.Equal("0", statement.GetOption(SqlServerParameters.IngestBatchSize));
+        statement.SetOption(SqlServerParameters.IngestBatchSize, "5000");
+        Assert.Equal("5000", statement.GetOption(SqlServerParameters.IngestBatchSize));
+        foreach (string bad in (string[])["-1", "x", "1.5", ""])
+        {
+            Assert.Equal(AdbcStatusCode.InvalidArgument,
+                Assert.Throws<AdbcException>(() => statement.SetOption(SqlServerParameters.IngestBatchSize, bad)).Status);
+        }
+    }
+
     [SkippableFact]
     public void UnknownColumnIsRejected()
     {

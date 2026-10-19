@@ -21,6 +21,7 @@ public sealed class SqlServerStatement : AdbcStatement
     private bool _temporary;
     private BulkIngestMode _ingestMode = BulkIngestMode.Create;
     private bool _tableLock;
+    private int _ingestBatchSize;
     private IArrowArrayStream? _boundStream;
     private string? _partitionColumn;
     private int _partitionCount = 1;
@@ -56,6 +57,13 @@ public sealed class SqlServerStatement : AdbcStatement
             case SqlServerParameters.IngestTableLock:
                 _tableLock = ParseBool(key, value);
                 break;
+            case SqlServerParameters.IngestBatchSize:
+                if (!int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int batchSize) || batchSize < 0)
+                {
+                    throw new AdbcException($"Invalid value '{value}' for option '{key}'", AdbcStatusCode.InvalidArgument);
+                }
+                _ingestBatchSize = batchSize;
+                break;
             case SqlServerParameters.PartitionColumn:
                 _partitionColumn = value;
                 break;
@@ -85,6 +93,7 @@ public sealed class SqlServerStatement : AdbcStatement
         AdbcOptions.Ingest.Temporary => AdbcOptions.GetEnabled(_temporary),
         AdbcOptions.Ingest.Mode => AdbcOptions.GetIngestMode(_ingestMode),
         SqlServerParameters.IngestTableLock => AdbcOptions.GetEnabled(_tableLock),
+        SqlServerParameters.IngestBatchSize => SqlServerParameters.Format(_ingestBatchSize),
         AdbcOptions.Statement.Incremental => AdbcOptions.GetEnabled(_incremental),
         SqlServerParameters.PartitionColumn => _partitionColumn,
         SqlServerParameters.PartitionCount => SqlServerParameters.Format(_partitionCount),
@@ -188,7 +197,7 @@ public sealed class SqlServerStatement : AdbcStatement
             using (data)
             {
                 var target = new IngestTarget(_targetCatalog, _targetDbSchema, _targetTable, _temporary);
-                return new UpdateResult(SqlServerBulkIngest.Execute(_connection.Session, target, _ingestMode, data, _tableLock));
+                return new UpdateResult(SqlServerBulkIngest.Execute(_connection.Session, target, _ingestMode, data, _tableLock, _ingestBatchSize));
             }
         }
 

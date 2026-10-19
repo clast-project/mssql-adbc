@@ -205,6 +205,12 @@ Two things it took to connect at all:
 Fabric also reports twice the rows of a bulk load, so ingest now returns
 the rows it sent, as SqlBulkCopy does.
 
+`adbc.mssql.ingest.batch_size` (statement option, default 0 for one batch)
+splits ingest into an `INSERT BULK` and BulkLoad message per that many rows,
+like `SqlBulkCopy.BatchSize`. Under autocommit each batch commits on its own,
+so a failure keeps the batches before it; in a transaction they all go
+together. Not yet run against SQL Server or Fabric.
+
 Synapse is not verified against a real pool; the tests play it with a fake
 TDS server, from Microsoft's documentation. Untested there: GetParameterSchema
 on a dedicated pool (needs database compatibility level 20 or higher), and
