@@ -29,5 +29,6 @@
   <ItemGroup>
     <Compile Include="..\Clast.Drivers.SqlServer.Tests\FakeTdsServer.cs" Link="FakeTdsServer.cs" />
     <Compile Include="..\Clast.Drivers.SqlServer.Tests\SqlServerTestConfiguration.cs" Link="SqlServerTestConfiguration.cs" />
+    <Compile Include="..\Clast.Drivers.SqlServer.Tests\Substrait\SubstraitPlanBuilder.cs" Link="SubstraitPlanBuilder.cs" />
   </ItemGroup>
 </Project>

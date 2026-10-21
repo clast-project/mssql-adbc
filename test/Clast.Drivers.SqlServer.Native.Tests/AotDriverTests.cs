@@ -6,7 +6,9 @@ using Apache.Arrow.Adbc;
 using Apache.Arrow.Adbc.C;
 using Apache.Arrow.Ipc;
 using Apache.Arrow.Types;
+using Clast.Drivers.SqlServer.Substrait;
 using Clast.Drivers.SqlServer.Tests;
+using Clast.Drivers.SqlServer.Tests.Substrait;
 using Xunit;
 
 namespace Clast.Drivers.SqlServer.Native.Tests;
@@ -278,6 +280,71 @@ public sealed class AotDriverTests
             List<RecordBatch> rows = await ReadAll(result);
             Assert.Equal(1, Assert.IsType<Int32Array>(Assert.Single(rows).Column("n")).GetValue(0));
             rows.ForEach(b => b.Dispose());
+        }
+    }
+
+    /// <summary>
+    /// A Substrait plan over the C ABI against the fake TDS server: decoded and
+    /// translated inside the native library, with the T-SQL it sends and reports
+    /// (adbc.mssql.substrait.sql) the same as the managed translator's, and the
+    /// dialect (an embedded resource) still there.
+    /// </summary>
+    [SkippableFact]
+    public async Task TranslatesASubstraitPlan()
+    {
+        string fixture = RequireFixture();
+        using var server = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Done()])
+        {
+            Batch = _ => FakeTdsServer.IntResult(42),
+        };
+        var f = new Functions();
+        int gt = f.Add("functions_comparison", "gt:any_any");
+        byte[] read = P.Read(["dbo", "t"], [("x", P.TI32), ("s", P.TString)]);
+        byte[] plan = P.Plan(P.ProjectEmit(P.Filter(read, P.Call(gt, P.Field(0), P.I32(1))), [0]), ["x"], f);
+        string expected = SqlServerSubstrait.ToSql(plan);
+
+        using AdbcDriver driver = CAdbcDriverImporter.Load(fixture);
+        using AdbcDatabase database = driver.Open(FakeServerOptions(server));
+        using AdbcConnection connection = database.Connect(null);
+        Assert.Equal(SqlServerSubstrait.DialectYaml, connection.GetOption(SqlServerParameters.SubstraitDialect));
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SubstraitPlan = plan;
+        Assert.Equal(expected, statement.GetOption(SqlServerParameters.SubstraitSql));
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        List<RecordBatch> batches = await ReadAll(stream);
+
+        Assert.Equal(42, Assert.IsType<Int32Array>(Assert.Single(batches).Column(0)).GetValue(0));
+        Assert.Equal(expected, Assert.Single(server.Batches));
+        batches.ForEach(b => b.Dispose());
+    }
+
+    /// <summary>A Substrait plan (a grouped sum over a virtual table, sorted) run on a real server over the C ABI.</summary>
+    [SkippableFact]
+    public async Task RunsASubstraitPlanWithARealServer()
+    {
+        string fixture = RequireFixture();
+        using AdbcDriver driver = CAdbcDriverImporter.Load(fixture);
+        using AdbcConnection connection = ConnectToRealServer(driver, out AdbcDatabase database);
+        using (database)
+        {
+            var f = new Functions();
+            int sum = f.Add("functions_arithmetic", "sum:i64");
+            byte[] values = P.Values([("k", P.TString), ("v", P.TI64)],
+                [P.Str("b"), P.I64(2)], [P.Str("a"), P.I64(1)], [P.Str("b"), P.I64(40)], [P.Str("B"), P.I64(5)]);
+            byte[] aggregate = P.Aggregate(values, [P.Field(0)], P.Measure(sum, [P.Field(1)]));
+            byte[] plan = P.Plan(P.Sort(aggregate, P.SortField(P.Field(0), P.AscNullsLast)), ["k", "total"], f);
+
+            using AdbcStatement statement = connection.CreateStatement();
+            statement.SubstraitPlan = plan;
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            List<RecordBatch> batches = await ReadAll(stream);
+
+            // The default collation is exact: "B" is its own group, and sorts before "a".
+            List<(string, long?)> rows = batches.SelectMany(b => Enumerable.Range(0, b.Length).Select(i =>
+                (((StringArray)b.Column("k")).GetString(i), ((Int64Array)b.Column("total")).GetValue(i)))).ToList();
+            List<(string, long?)> expected = [("B", 5), ("a", 1), ("b", 42)];
+            Assert.Equal(expected, rows);
+            batches.ForEach(b => b.Dispose());
         }
     }
 }
