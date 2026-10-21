@@ -209,7 +209,12 @@ the rows it sent, as SqlBulkCopy does.
 splits ingest into an `INSERT BULK` and BulkLoad message per that many rows,
 like `SqlBulkCopy.BatchSize`. Under autocommit each batch commits on its own,
 so a failure keeps the batches before it; in a transaction they all go
-together. Verified against SQL Server; not yet run against Fabric.
+together. Verified against SQL Server and a Fabric Warehouse
+(`WarehouseTests.IngestsInBatches`: several batches on one session, a
+rollback, and an aborted batch after a committed one). On Fabric each batch
+costs time: 1M rows took 16.5 s in one batch and 23.5 s in batches of
+100,000 (`--analyze client 3 ingest 0,100000`; SqlClient's `BatchSize` is
+no faster), so batch only for the autocommit recovery it gives.
 
 Synapse is not verified against a real pool; the tests play it with a fake
 TDS server, from Microsoft's documentation. Untested there: GetParameterSchema
