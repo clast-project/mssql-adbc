@@ -209,7 +209,7 @@ the rows it sent, as SqlBulkCopy does.
 splits ingest into an `INSERT BULK` and BulkLoad message per that many rows,
 like `SqlBulkCopy.BatchSize`. Under autocommit each batch commits on its own,
 so a failure keeps the batches before it; in a transaction they all go
-together. Not yet run against SQL Server or Fabric.
+together. Verified against SQL Server; not yet run against Fabric.
 
 Synapse is not verified against a real pool; the tests play it with a fake
 TDS server, from Microsoft's documentation. Untested there: GetParameterSchema

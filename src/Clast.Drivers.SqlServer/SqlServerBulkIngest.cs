@@ -104,8 +104,9 @@ internal static class SqlServerBulkIngest
             writer.WriteUInt16(0); // status
             writer.WriteUInt16(0); // current command
             writer.WriteInt64(0);  // row count
-            loading = false;
+            // A failure sending the message still aborts it; one in the reply needs no abort.
             session.EndRequest();
+            loading = false;
 
             // The server's row counts are ignored: they vary (Fabric Warehouse's add up to
             // twice the rows), and a load is all or nothing.
