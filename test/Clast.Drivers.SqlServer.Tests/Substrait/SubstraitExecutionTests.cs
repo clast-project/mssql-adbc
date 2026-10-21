@@ -512,6 +512,23 @@ public class SubstraitExecutionTests
     }
 
     [SkippableFact]
+    public void BoundParametersAreRejectedWithAPlan()
+    {
+        SqlServerTestConfiguration config = SqlServerTestConfiguration.Load();
+        using AdbcConnection connection = new SqlServerDriver().Open(config.Options).Connect(null);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SubstraitPlan = P.Plan(P.Values([("a", P.TI32)], [P.I32(1)]), ["a"]);
+        var schema = new Schema([new Field("p", Int32Type.Default, false)], null);
+        Func<RecordBatch> parameters = () => new RecordBatch(schema, [new Int32Array.Builder().Append(1).Build()], 1);
+
+        statement.Bind(parameters(), schema);
+        Assert.Equal(AdbcStatusCode.NotImplemented, Assert.ThrowsAny<AdbcException>(() => statement.ExecuteSchema()).Status);
+        Assert.Equal(AdbcStatusCode.NotImplemented, Assert.ThrowsAny<AdbcException>(() => statement.ExecuteQuery()).Status);
+        statement.Bind(parameters(), schema);
+        Assert.Equal(AdbcStatusCode.NotImplemented, Assert.ThrowsAny<AdbcException>(() => statement.ExecuteUpdate()).Status);
+    }
+
+    [SkippableFact]
     public void PartitionedReadsOfASortedPlan()
     {
         // A sorted plan can't be used as a derived table as it stands (T-SQL allows no ORDER BY there).

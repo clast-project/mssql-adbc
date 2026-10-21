@@ -44,7 +44,9 @@ metadata:
     strings: >
       Every string value is given a collation, Latin1_General_100_BIN2_UTF8 by
       default (statement option adbc.mssql.substrait.collation), which compares,
-      sorts and groups exactly and case-sensitively.
+      sorts and groups case-sensitively, by binary value: the closest SQL Server
+      comes to Substrait's semantics, with the differences below
+      (supplementary_characters, trailing_spaces).
       An empty collation option leaves the columns' own collations (often
       case-insensitive), which lets the server use indexes on them but changes
       results.
@@ -84,7 +86,8 @@ metadata:
       Etc/UTC), Etc/GMT+n or Etc/GMT-n, or an offset such as +05:30.
     intervals: >
       SQL Server has no interval type: interval_day and interval_year values can
-      only be literals added to or subtracted from dates and timestamps.
+      only be literals added to or subtracted from dates and timestamps, in
+      whole multiples of 100 ns.
     driver_column_types: >
       The driver returns tinyint columns as uint8, which has no Substrait type;
       datetimeoffset columns as the arrow.timestamp_with_offset extension type;
@@ -826,7 +829,7 @@ supported_scalar_functions:
     name: add
     metadata:
       tsql_constraints:
-        - "The interval must be a literal; it is applied with DATEADD (months at the end of a month clamp to its last day)."
+        - "The interval must be a literal, in whole multiples of 100 ns; it is applied with DATEADD (months at the end of a month clamp to its last day)."
     system_metadata: { name: DATEADD }
     supported_impls: [pts_iday, ptstz_iday, date_iday, pts_iyear, ptstz_iyear_str, date_iyear]
   - source: datetime

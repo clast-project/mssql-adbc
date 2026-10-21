@@ -1313,7 +1313,11 @@ internal sealed class TSqlEmitter
             case TypeKind.FixedBinary:
                 return SqlExpr.Of(TSql.Binary(lit.BytesValue!), t, SqlProps.None);
             case TypeKind.Date:
-                return SqlExpr.Of($"CAST('{DateTimeOf(lit.IntValue * TimeSpan.TicksPerDay).ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture)}' AS date)", t, SqlProps.None);
+            {
+                // Days beyond TimeSpan's range would overflow in ticks (and could wrap to a date in range).
+                long ticks = lit.IntValue is >= -TimeSpanMaxDays and <= TimeSpanMaxDays ? lit.IntValue * TimeSpan.TicksPerDay : long.MaxValue;
+                return SqlExpr.Of($"CAST('{DateTimeOf(ticks).ToString("yyyy'-'MM'-'dd", CultureInfo.InvariantCulture)}' AS date)", t, SqlProps.None);
+            }
             case TypeKind.PrecisionTimestamp:
             case TypeKind.PrecisionTimestampTz:
             {
@@ -1403,6 +1407,9 @@ internal sealed class TSqlEmitter
     }
 
     private static readonly long s_unixEpochTicks = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks;
+
+    /// <summary>TimeSpan.MaxValue.Days: the most days whose ticks fit in a long.</summary>
+    private const long TimeSpanMaxDays = 10_675_199;
 
     private static DateTime DateTimeOf(long ticksSinceEpoch)
     {

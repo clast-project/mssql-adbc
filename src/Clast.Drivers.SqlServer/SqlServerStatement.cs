@@ -304,6 +304,10 @@ public sealed class SqlServerStatement : AdbcStatement
     public override Schema ExecuteSchema()
     {
         string sql = Query();
+        if (_sqlQuery == null && _boundStream != null)
+        {
+            throw AdbcException.NotImplemented("Bound parameters are not supported with a Substrait plan");
+        }
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
         // A Substrait plan has no parameters to declare.

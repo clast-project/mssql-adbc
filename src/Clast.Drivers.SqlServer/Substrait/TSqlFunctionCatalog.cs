@@ -1187,6 +1187,11 @@ internal static class TSqlFunctionCatalog
         long seconds = (long)(rest / nanosPerSecond);
         long nanos = (long)(rest % nanosPerSecond);
 
+        if (nanos % 100 != 0)
+        {
+            // DATEADD would round to datetime2's 100 ns.
+            throw c.Unsupported("the interval has sub-100ns precision, which SQL Server cannot represent.");
+        }
         if (nanos != 0)
         {
             value = nanos % 1000 == 0

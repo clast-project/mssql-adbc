@@ -183,6 +183,20 @@ public class SubstraitTranslationTests
         Assert.Contains("NaN", Rejection(P.Plan(Select(Orders, 9, P.Fp64(double.NaN)))));
         Assert.Contains("Single joins", Rejection(P.Plan(P.Join(Orders, Orders, null, P.LeftSingle))));
         Assert.Contains("string is not supported", Rejection(P.Plan(Select(Orders, 9, P.Cast(P.TString, P.Field(3))))));
+        Assert.Contains("sub-100ns", Rejection(P.Plan(Select(Orders, 9, P.Call(addDay, P.Field(5), P.IntervalDay(0, 0, 150, 9))), null, f)));
+        Assert.Contains("DATEADD(nanosecond, 200, ", Sql(P.Plan(Select(Orders, 9, P.Call(addDay, P.Field(5), P.IntervalDay(0, 0, 200, 9))), null, f)));
+    }
+
+    [Fact]
+    public void DateLiteralsOutsideTheRangeAreRejected()
+    {
+        // 2,137,972,720 days overflows a long in ticks and used to wrap to 9999-12-31.
+        foreach (int days in new[] { 2_137_972_720, int.MaxValue, int.MinValue, 2_932_897, -719_163 })
+        {
+            Assert.Contains("outside the range", Rejection(P.Plan(Select(Orders, 9, P.Date(days)))));
+        }
+        Assert.Contains("CAST('9999-12-31' AS date)", Sql(P.Plan(Select(Orders, 9, P.Date(2_932_896)))));
+        Assert.Contains("CAST('0001-01-01' AS date)", Sql(P.Plan(Select(Orders, 9, P.Date(-719_162)))));
     }
 
     [Fact]
