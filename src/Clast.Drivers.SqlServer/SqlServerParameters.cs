@@ -136,9 +136,14 @@ public static class SqlServerParameters
     /// <summary>
     /// Statement option: the collation a Substrait plan's string values get,
     /// which decides how they compare, sort and group. The default,
-    /// <c>Latin1_General_100_BIN2_UTF8</c>, compares exactly, as Substrait
-    /// does (by UTF-16 code unit). An empty value uses the columns' own collations instead (often
-    /// case-insensitive), which lets the server use indexes on them.
+    /// <c>Latin1_General_100_BIN2_UTF8</c>, is binary and case-sensitive, the
+    /// closest SQL Server comes to Substrait's semantics, but not the same:
+    /// it works on UTF-16 code units, so a character outside the Basic
+    /// Multilingual Plane counts as two and sorts below U+E000, and, as under
+    /// every collation, trailing spaces are ignored in comparisons
+    /// (<c>'a' = 'a '</c>). An empty value uses the columns' own collations
+    /// instead (often case-insensitive), which lets the server use indexes on
+    /// them.
     /// </summary>
     public const string SubstraitCollation = "adbc.mssql.substrait.collation";
 

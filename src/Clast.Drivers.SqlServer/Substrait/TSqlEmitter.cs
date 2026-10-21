@@ -22,7 +22,7 @@ namespace Clast.Drivers.SqlServer.Substrait;
 /// </remarks>
 internal sealed class TSqlEmitter
 {
-    /// <summary>The collation that gives Substrait's exact, case-sensitive string semantics.</summary>
+    /// <summary>The collation closest to Substrait's string semantics: binary and case-sensitive, by UTF-16 code unit.</summary>
     public const string BinaryCollation = "Latin1_General_100_BIN2_UTF8";
 
     /// <summary>The collation used for functions asked to ignore case (and nothing else: accents, kana and width count).</summary>

@@ -9,7 +9,14 @@ extensions; older producers' legacy fields are accepted too.
 Constructs that can't be translated with the same semantics are rejected with
 `SubstraitTranslationException` (InvalidArgument) rather than approximated.
 Unknown fields in relations and expressions are rejected too, since ignoring
-them could change a query's meaning.
+them could change a query's meaning. Three differences are accepted instead,
+since rejecting them would mean rejecting every string or binary comparison;
+the dialect records them under `metadata.semantics`:
+
+- Strings are UTF-16: a character outside the Basic Multilingual Plane, such
+  as an emoji, counts as two in lengths and positions, and sorts below U+E000.
+- Comparisons ignore trailing spaces: `'a' = 'a '`, and the two group together.
+- Binary comparisons ignore trailing zero bytes: `0x01 = 0x0100`.
 
 | Piece | Where |
 |---|---|
@@ -23,7 +30,7 @@ them could change a query's meaning.
 
 | Option | Where | Meaning |
 |---|---|---|
-| `adbc.mssql.substrait.collation` | statement | Collation for string values. Default `Latin1_General_100_BIN2_UTF8`: exact, case-sensitive comparison, sorting and grouping, as Substrait specifies (but on UTF-16 code units, so characters outside the BMP count as two and sort below U+E000). Empty: the columns' own collations, which lets the server use indexes on them but usually ignores case |
+| `adbc.mssql.substrait.collation` | statement | Collation for string values. Default `Latin1_General_100_BIN2_UTF8`: binary, case-sensitive comparison, sorting and grouping, the closest to Substrait's semantics (but on UTF-16 code units, and ignoring trailing spaces, as above). Empty: the columns' own collations, which lets the server use indexes on them but usually ignores case |
 | `adbc.mssql.substrait.sql` | statement, read-only | The T-SQL the current plan translates to |
 | `adbc.mssql.substrait.dialect` | database or connection, read-only | The dialect YAML |
 

@@ -13,7 +13,17 @@ namespace Clast.Drivers.SqlServer.Substrait;
 /// <remarks>
 /// A statement given a plan through <c>SubstraitPlan</c> runs its translation.
 /// Constructs that can't be translated with the same semantics are rejected
-/// with <see cref="SubstraitTranslationException"/> rather than approximated.
+/// with <see cref="SubstraitTranslationException"/> rather than approximated,
+/// with three exceptions that are accepted because they affect only some
+/// values of common operations (string and binary comparison), and which the
+/// dialect records under <c>metadata.semantics</c>:
+/// <list type="bullet">
+/// <item>Strings are UTF-16: a character outside the Basic Multilingual Plane
+/// counts as two in lengths and positions, and sorts below U+E000.</item>
+/// <item>Comparisons ignore trailing spaces: <c>'a' = 'a '</c>, and the two
+/// group together.</item>
+/// <item>Binary comparisons ignore trailing zero bytes: <c>0x01 = 0x0100</c>.</item>
+/// </list>
 /// </remarks>
 public static class SqlServerSubstrait
 {
@@ -22,7 +32,8 @@ public static class SqlServerSubstrait
     /// <summary>
     /// The collation string values get by default
     /// (<see cref="SqlServerParameters.SubstraitCollation"/>): binary, so that
-    /// comparisons, sorting and grouping are exact and case-sensitive.
+    /// comparisons, sorting and grouping are case-sensitive and by UTF-16 code
+    /// unit, except that trailing spaces are ignored (see the remarks above).
     /// </summary>
     public const string DefaultCollation = TSqlEmitter.BinaryCollation;
 
