@@ -187,6 +187,49 @@ public sealed class WarehouseTests
     }
 
     [SkippableFact]
+    public void IngestsInBatches()
+    {
+        using AdbcConnection connection = Connect();
+        string table = NewTable();
+        try
+        {
+            long BatchedIngest(BulkIngestMode mode, IEnumerable<int> values)
+            {
+                var batch = new RecordBatch.Builder()
+                    .Append("v", false, c => c.Int32(b => b.AppendRange(values)))
+                    .Build();
+                using AdbcStatement statement = connection.BulkIngest(null, "dbo", table, mode, false);
+                statement.SetOption(SqlServerParameters.IngestBatchSize, "10000");
+                statement.Bind(batch, batch.Schema);
+                return statement.ExecuteUpdate().AffectedRows;
+            }
+            long Count() => Convert.ToInt64(Query(connection, $"SELECT COUNT_BIG(*) FROM dbo.[{table}]")[0][0]);
+
+            // Three INSERT BULKs on one session, the last partial.
+            Execute(connection, $"CREATE TABLE dbo.[{table}] (v smallint NOT NULL)");
+            Assert.Equal(25000, BatchedIngest(BulkIngestMode.Append, Enumerable.Range(0, 25000).Select(i => i % 30000)));
+            Assert.Equal(25000L, Count());
+            Assert.Equal(25000L * 24999 / 2, Convert.ToInt64(Query(connection, $"SELECT SUM(CAST(v AS bigint)) FROM dbo.[{table}]")[0][0]));
+
+            // In a transaction, the batches roll back together.
+            connection.AutoCommit = false;
+            Assert.Equal(25000, BatchedIngest(BulkIngestMode.Append, Enumerable.Range(0, 25000)));
+            connection.Rollback();
+            connection.AutoCommit = true;
+            Assert.Equal(25000L, Count());
+
+            // A value too big for smallint aborts the second batch; the first stays, and the session still works.
+            var ex = Assert.ThrowsAny<AdbcException>(() => BatchedIngest(BulkIngestMode.Append, Enumerable.Range(0, 20000).Select(i => i == 15000 ? 40000 : i)));
+            Assert.Equal(AdbcStatusCode.InvalidData, ex.Status);
+            Assert.Equal(35000L, Count());
+        }
+        finally
+        {
+            Drop(connection, table);
+        }
+    }
+
+    [SkippableFact]
     public void CatalogFunctionsWork()
     {
         using AdbcConnection connection = Connect();
