@@ -1,0 +1,45 @@
+{
+ "ordered": false,
+ "columns": [
+  "id",
+  "c"
+ ],
+ "rows": [
+  [
+   1,
+   "cheap"
+  ],
+  [
+   2,
+   "none"
+  ],
+  [
+   3,
+   "pricey"
+  ],
+  [
+   4,
+   "cheap"
+  ],
+  [
+   5,
+   "cheap"
+  ],
+  [
+   6,
+   "cheap"
+  ],
+  [
+   7,
+   "big"
+  ],
+  [
+   8,
+   "cheap"
+  ],
+  [
+   9,
+   "cheap"
+  ]
+ ]
+}

@@ -1,0 +1,2 @@
+SELECT SUM([t0].[amount]) AS [s], MIN([t0].[amount]) AS [lo], MAX([t0].[amount]) AS [hi]
+FROM [orders] AS [t0]

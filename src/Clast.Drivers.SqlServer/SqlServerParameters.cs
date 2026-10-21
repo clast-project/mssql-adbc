@@ -133,6 +133,25 @@ public static class SqlServerParameters
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 
+    /// <summary>
+    /// Statement option: the collation a Substrait plan's string values get,
+    /// which decides how they compare, sort and group. The default,
+    /// <c>Latin1_General_100_BIN2_UTF8</c>, compares exactly, as Substrait
+    /// does (by UTF-16 code unit). An empty value uses the columns' own collations instead (often
+    /// case-insensitive), which lets the server use indexes on them.
+    /// </summary>
+    public const string SubstraitCollation = "adbc.mssql.substrait.collation";
+
+    /// <summary>Read-only, from GetOption on a statement: the T-SQL its Substrait plan translates to.</summary>
+    public const string SubstraitSql = "adbc.mssql.substrait.sql";
+
+    /// <summary>
+    /// Read-only, from GetOption on the database or a connection: the
+    /// driver's Substrait dialect (YAML in the Substrait dialect format), which
+    /// lists the relations, expressions, types and functions it translates.
+    /// </summary>
+    public const string SubstraitDialect = "adbc.mssql.substrait.dialect";
+
     internal static AdbcException OptionNotFound(string key) =>
         new($"Option '{key}' is not recognized or has no value", AdbcStatusCode.NotFound);
 

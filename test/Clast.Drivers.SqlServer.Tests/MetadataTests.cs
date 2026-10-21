@@ -122,7 +122,8 @@ public sealed class MetadataTests : IDisposable
         Assert.Contains("SQL Server", (string)info[AdbcInfoCode.VendorName]!);
         Assert.Matches(@"^\d+\.\d+\.\d+$", (string)info[AdbcInfoCode.VendorVersion]!);
         Assert.Equal(true, info[AdbcInfoCode.VendorSql]);
-        Assert.Equal(false, info[AdbcInfoCode.VendorSubstrait]);
+        Assert.Equal(true, info[AdbcInfoCode.VendorSubstrait]);
+        Assert.Equal("0.107.0", info[AdbcInfoCode.VendorSubstraitMaxVersion]);
         Assert.Equal(SqlServerMetadata.DriverName, info[AdbcInfoCode.DriverName]);
         Assert.False(string.IsNullOrEmpty((string)info[AdbcInfoCode.DriverVersion]!));
         Assert.StartsWith("23.", (string)info[AdbcInfoCode.DriverArrowVersion]!);

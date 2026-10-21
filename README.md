@@ -4,6 +4,12 @@ A high-performance [ADBC](https://arrow.apache.org/adbc/) 1.1 driver for
 Microsoft SQL Server, written in C# for .NET 10. It speaks TDS directly and
 decodes rows straight into Apache Arrow buffers. See [docs/plan.md](docs/plan.md).
 
+It also executes [Substrait](https://substrait.io/) plans, translated to T-SQL,
+and publishes a Substrait dialect describing what translates; see
+[docs/substrait.md](docs/substrait.md), and
+[docs/substrait-dialect-gaps.md](docs/substrait-dialect-gaps.md) for what the
+dialect format can't express.
+
 Part of the clast-project. Status: early prototype.
 
 ## Building
@@ -92,6 +98,10 @@ must have the TCP protocol enabled.
 names a JSON file with `options` (`adbc.mssql.server`, `adbc.mssql.database`) and
 an `accessTokenFile`: the path of a file holding an Entra access token for
 `https://database.windows.net/`. They create and drop tables named `clast_wh_*`.
+
+The Substrait tests use plans DataFusion produced (`Fixtures/DataFusion`);
+`scripts/gen_datafusion_fixtures.py` regenerates them, and
+`MSSQL_UPDATE_SNAPSHOTS=1` rewrites the reviewed T-SQL snapshots.
 
 ## Benchmarks
 

@@ -1,0 +1,5 @@
+SELECT TOP (10) [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 AS [name], SUM([t0].[price]) AS [total]
+FROM [orders] AS [t0]
+WHERE ([t0].[qty] > 5)
+GROUP BY [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8
+ORDER BY CASE WHEN SUM([t0].[price]) IS NULL THEN 0 ELSE 1 END, SUM([t0].[price]) DESC

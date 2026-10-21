@@ -1,0 +1,2 @@
+SELECT ABS([t0].[price]) AS [a], ROUND([t0].[price], 2) AS [r], CEILING([t0].[price]) AS [c], FLOOR([t0].[price]) AS [f], SQRT(ABS([t0].[price])) AS [s], POWER([t0].[price], 2E0) AS [p]
+FROM [orders] AS [t0]

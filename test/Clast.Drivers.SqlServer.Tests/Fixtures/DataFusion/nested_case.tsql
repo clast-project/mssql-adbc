@@ -1,0 +1,2 @@
+SELECT [t0].[id] AS [id], CASE WHEN ([t0].[price] IS NULL) THEN N'none' COLLATE Latin1_General_100_BIN2_UTF8 WHEN ([t0].[price] > 5E0) THEN CASE WHEN ([t0].[qty] > 5) THEN N'big' COLLATE Latin1_General_100_BIN2_UTF8 ELSE N'pricey' COLLATE Latin1_General_100_BIN2_UTF8 END ELSE N'cheap' COLLATE Latin1_General_100_BIN2_UTF8 END AS [c]
+FROM [orders] AS [t0]

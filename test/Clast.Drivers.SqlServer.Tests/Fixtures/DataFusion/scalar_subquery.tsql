@@ -1,0 +1,5 @@
+SELECT [t0].[id] AS [id], ([t0].[price] - (
+SELECT AVG([t1].[price]) AS [c0]
+FROM [orders] AS [t1]
+)) AS [diff]
+FROM [orders] AS [t0]

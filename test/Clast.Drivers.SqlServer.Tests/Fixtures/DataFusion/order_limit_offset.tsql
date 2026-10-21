@@ -1,0 +1,8 @@
+SELECT [t1].[id] AS [id], [t1].[name] AS [name]
+FROM (
+SELECT TOP (7) [t0].[id] AS [id], [t0].[name] AS [name], [t0].[price] AS [price], CASE WHEN [t0].[price] IS NULL THEN 1 ELSE 0 END AS [_o0], [t0].[price] AS [_o1], CASE WHEN [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 IS NULL THEN 0 ELSE 1 END AS [_o2], [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 AS [_o3]
+FROM [orders] AS [t0]
+ORDER BY CASE WHEN [t0].[price] IS NULL THEN 1 ELSE 0 END, [t0].[price], CASE WHEN [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 IS NULL THEN 0 ELSE 1 END, [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 DESC
+) AS [t1]
+ORDER BY [t1].[_o0], [t1].[_o1], [t1].[_o2], [t1].[_o3] DESC
+OFFSET 2 ROWS FETCH NEXT 5 ROWS ONLY

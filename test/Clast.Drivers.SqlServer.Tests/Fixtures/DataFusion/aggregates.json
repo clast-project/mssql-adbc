@@ -1,0 +1,332 @@
+{
+ "extensions": [
+  {
+   "extensionFunction": {
+    "functionAnchor": 2,
+    "name": "min",
+    "extensionUrnReference": 4294967295
+   }
+  },
+  {
+   "extensionFunction": {
+    "name": "count",
+    "extensionUrnReference": 4294967295
+   }
+  },
+  {
+   "extensionFunction": {
+    "functionAnchor": 1,
+    "name": "avg",
+    "extensionUrnReference": 4294967295
+   }
+  },
+  {
+   "extensionFunction": {
+    "functionAnchor": 3,
+    "name": "max",
+    "extensionUrnReference": 4294967295
+   }
+  }
+ ],
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "project": {
+      "common": {
+       "emit": {
+        "outputMapping": [
+         6,
+         7,
+         8,
+         9,
+         10,
+         11
+        ]
+       }
+      },
+      "input": {
+       "aggregate": {
+        "input": {
+         "read": {
+          "baseSchema": {
+           "names": [
+            "id",
+            "customer_id",
+            "name",
+            "price",
+            "qty",
+            "ts",
+            "flag",
+            "amount",
+            "d"
+           ],
+           "struct": {
+            "types": [
+             {
+              "i64": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "i64": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "string": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "fp64": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "i32": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "precisionTimestamp": {
+               "precision": 6,
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "bool": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "decimal": {
+               "scale": 2,
+               "precision": 10,
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "date": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             }
+            ],
+            "nullability": "NULLABILITY_REQUIRED"
+           }
+          },
+          "projection": {
+           "select": {
+            "structItems": [
+             {},
+             {
+              "field": 2
+             },
+             {
+              "field": 3
+             }
+            ]
+           }
+          },
+          "namedTable": {
+           "names": [
+            "orders"
+           ]
+          }
+         }
+        },
+        "groupings": [
+         {}
+        ],
+        "measures": [
+         {
+          "measure": {
+           "invocation": "AGGREGATION_INVOCATION_ALL",
+           "arguments": [
+            {
+             "value": {
+              "literal": {
+               "i64": "1"
+              }
+             }
+            }
+           ]
+          }
+         },
+         {
+          "measure": {
+           "invocation": "AGGREGATION_INVOCATION_ALL",
+           "arguments": [
+            {
+             "value": {
+              "selection": {
+               "directReference": {
+                "structField": {
+                 "field": 1
+                }
+               },
+               "rootReference": {}
+              }
+             }
+            }
+           ]
+          }
+         },
+         {
+          "measure": {
+           "invocation": "AGGREGATION_INVOCATION_DISTINCT",
+           "arguments": [
+            {
+             "value": {
+              "selection": {
+               "directReference": {
+                "structField": {
+                 "field": 1
+                }
+               },
+               "rootReference": {}
+              }
+             }
+            }
+           ]
+          }
+         },
+         {
+          "measure": {
+           "functionReference": 1,
+           "invocation": "AGGREGATION_INVOCATION_ALL",
+           "arguments": [
+            {
+             "value": {
+              "selection": {
+               "directReference": {
+                "structField": {
+                 "field": 2
+                }
+               },
+               "rootReference": {}
+              }
+             }
+            }
+           ]
+          }
+         },
+         {
+          "measure": {
+           "functionReference": 2,
+           "invocation": "AGGREGATION_INVOCATION_ALL",
+           "arguments": [
+            {
+             "value": {
+              "selection": {
+               "directReference": {
+                "structField": {
+                 "field": 2
+                }
+               },
+               "rootReference": {}
+              }
+             }
+            }
+           ]
+          }
+         },
+         {
+          "measure": {
+           "functionReference": 3,
+           "invocation": "AGGREGATION_INVOCATION_ALL",
+           "arguments": [
+            {
+             "value": {
+              "selection": {
+               "directReference": {
+                "structField": {}
+               },
+               "rootReference": {}
+              }
+             }
+            }
+           ]
+          }
+         }
+        ]
+       }
+      },
+      "expressions": [
+       {
+        "selection": {
+         "directReference": {
+          "structField": {}
+         },
+         "rootReference": {}
+        }
+       },
+       {
+        "selection": {
+         "directReference": {
+          "structField": {
+           "field": 1
+          }
+         },
+         "rootReference": {}
+        }
+       },
+       {
+        "selection": {
+         "directReference": {
+          "structField": {
+           "field": 2
+          }
+         },
+         "rootReference": {}
+        }
+       },
+       {
+        "selection": {
+         "directReference": {
+          "structField": {
+           "field": 3
+          }
+         },
+         "rootReference": {}
+        }
+       },
+       {
+        "selection": {
+         "directReference": {
+          "structField": {
+           "field": 4
+          }
+         },
+         "rootReference": {}
+        }
+       },
+       {
+        "selection": {
+         "directReference": {
+          "structField": {
+           "field": 5
+          }
+         },
+         "rootReference": {}
+        }
+       }
+      ]
+     }
+    },
+    "names": [
+     "n",
+     "nn",
+     "nd",
+     "a",
+     "lo",
+     "hi"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

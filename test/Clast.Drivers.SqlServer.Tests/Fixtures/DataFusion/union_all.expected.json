@@ -1,0 +1,50 @@
+{
+ "ordered": false,
+ "columns": [
+  "name"
+ ],
+ "rows": [
+  [
+   "apple"
+  ],
+  [
+   "banana"
+  ],
+  [
+   "Avocado"
+  ],
+  [
+   "cherry"
+  ],
+  [
+   "apricot"
+  ],
+  [
+   "date"
+  ],
+  [
+   "a.b"
+  ],
+  [
+   null
+  ],
+  [
+   "Apple"
+  ],
+  [
+   "x"
+  ],
+  [
+   "y"
+  ],
+  [
+   "z"
+  ],
+  [
+   "w"
+  ],
+  [
+   "X"
+  ]
+ ]
+}

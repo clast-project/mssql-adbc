@@ -1,0 +1,2 @@
+SELECT [t0].[id] AS [id], [t0].[flag] AS [flag], CASE WHEN (NOT ([t0].[flag] = 1)) THEN CAST(1 AS bit) WHEN NOT (NOT ([t0].[flag] = 1)) THEN CAST(0 AS bit) END AS [nf], CASE WHEN (([t0].[flag] = 1) AND ([t0].[qty] > 2)) THEN CAST(1 AS bit) WHEN NOT (([t0].[flag] = 1) AND ([t0].[qty] > 2)) THEN CAST(0 AS bit) END AS [both]
+FROM [orders] AS [t0]

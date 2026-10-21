@@ -1,0 +1,3 @@
+SELECT (CAST([t0].[qty] AS bigint) % CAST(2 AS bigint)) AS [parity], COUNT_BIG(CAST(1 AS bigint)) AS [n]
+FROM [orders] AS [t0]
+GROUP BY (CAST([t0].[qty] AS bigint) % CAST(2 AS bigint))

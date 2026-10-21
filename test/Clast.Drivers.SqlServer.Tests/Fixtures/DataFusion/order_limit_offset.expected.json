@@ -1,0 +1,29 @@
+{
+ "ordered": true,
+ "columns": [
+  "id",
+  "name"
+ ],
+ "rows": [
+  [
+   5,
+   "apricot"
+  ],
+  [
+   1,
+   "apple"
+  ],
+  [
+   9,
+   "Apple"
+  ],
+  [
+   8,
+   null
+  ],
+  [
+   3,
+   "Avocado"
+  ]
+ ]
+}

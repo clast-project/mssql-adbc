@@ -1,0 +1,156 @@
+{
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "project": {
+      "common": {
+       "emit": {
+        "outputMapping": [
+         2,
+         3
+        ]
+       }
+      },
+      "input": {
+       "read": {
+        "baseSchema": {
+         "names": [
+          "id",
+          "customer_id",
+          "name",
+          "price",
+          "qty",
+          "ts",
+          "flag",
+          "amount",
+          "d"
+         ],
+         "struct": {
+          "types": [
+           {
+            "i64": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "i64": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "string": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "fp64": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "i32": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "precisionTimestamp": {
+             "precision": 6,
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "bool": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "decimal": {
+             "scale": 2,
+             "precision": 10,
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "date": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           }
+          ],
+          "nullability": "NULLABILITY_REQUIRED"
+         }
+        },
+        "projection": {
+         "select": {
+          "structItems": [
+           {
+            "field": 3
+           },
+           {
+            "field": 4
+           }
+          ]
+         }
+        },
+        "namedTable": {
+         "names": [
+          "orders"
+         ]
+        }
+       }
+      },
+      "expressions": [
+       {
+        "cast": {
+         "type": {
+          "i64": {
+           "nullability": "NULLABILITY_NULLABLE"
+          }
+         },
+         "input": {
+          "selection": {
+           "directReference": {
+            "structField": {
+             "field": 1
+            }
+           },
+           "rootReference": {}
+          }
+         },
+         "failureBehavior": "FAILURE_BEHAVIOR_THROW_EXCEPTION"
+        }
+       },
+       {
+        "cast": {
+         "type": {
+          "string": {
+           "typeVariationReference": 2,
+           "nullability": "NULLABILITY_NULLABLE"
+          }
+         },
+         "input": {
+          "selection": {
+           "directReference": {
+            "structField": {}
+           },
+           "rootReference": {}
+          }
+         },
+         "failureBehavior": "FAILURE_BEHAVIOR_THROW_EXCEPTION"
+        }
+       }
+      ]
+     }
+    },
+    "names": [
+     "q",
+     "p"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

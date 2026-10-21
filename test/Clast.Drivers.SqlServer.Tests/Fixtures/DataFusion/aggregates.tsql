@@ -1,0 +1,2 @@
+SELECT COUNT_BIG(CAST(1 AS bigint)) AS [n], COUNT_BIG([t0].[name] COLLATE Latin1_General_100_BIN2_UTF8) AS [nn], COUNT_BIG(DISTINCT [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8) AS [nd], AVG([t0].[price]) AS [a], MIN([t0].[price]) AS [lo], MAX([t0].[id]) AS [hi]
+FROM [orders] AS [t0]

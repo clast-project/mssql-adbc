@@ -1,0 +1,4 @@
+SELECT [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 AS [name], COUNT_BIG(CAST(1 AS bigint)) AS [n]
+FROM [orders] AS [t0]
+GROUP BY [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8
+ORDER BY CASE WHEN [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 IS NULL THEN 1 ELSE 0 END, [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8

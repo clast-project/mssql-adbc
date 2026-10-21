@@ -1,0 +1,4 @@
+SELECT [t0].[id] AS [id], [t1].[cname] AS [cname], [t2].[region] AS [region]
+FROM [orders] AS [t0]
+INNER JOIN [customers] AS [t1] ON ([t0].[customer_id] = [t1].[id])
+INNER JOIN [customers] AS [t2] ON ([t1].[id] = [t2].[id])

@@ -1,0 +1,2 @@
+SELECT [t0].[id] AS [id], (CAST([t0].[qty] AS bigint) % CAST(4 AS bigint)) AS [m]
+FROM [orders] AS [t0]

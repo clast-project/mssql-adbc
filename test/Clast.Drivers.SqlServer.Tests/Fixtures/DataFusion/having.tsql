@@ -1,0 +1,7 @@
+SELECT [t1].[customer_id] AS [customer_id], [t1].[_a0] AS [total]
+FROM (
+SELECT [t0].[customer_id] AS [customer_id], SUM([t0].[price]) AS [_a0]
+FROM [orders] AS [t0]
+GROUP BY [t0].[customer_id]
+) AS [t1]
+WHERE ([t1].[_a0] > 5E0)

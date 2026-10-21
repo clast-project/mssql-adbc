@@ -1,0 +1,2 @@
+SELECT CASE WHEN ([t0].[qty] > 1) THEN N'many' COLLATE Latin1_General_100_BIN2_UTF8 WHEN ([t0].[qty] = 1) THEN N'one' COLLATE Latin1_General_100_BIN2_UTF8 ELSE N'none' COLLATE Latin1_General_100_BIN2_UTF8 END AS [c]
+FROM [orders] AS [t0]

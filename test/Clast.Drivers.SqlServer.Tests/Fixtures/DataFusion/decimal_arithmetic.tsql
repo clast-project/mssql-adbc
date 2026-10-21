@@ -1,0 +1,2 @@
+SELECT [t0].[id] AS [id], CAST(([t0].[amount] * CAST(2 AS decimal(20,0))) AS decimal(31,2)) AS [twice], CAST(([t0].[amount] + [t0].[amount]) AS decimal(11,2)) AS [sum2]
+FROM [orders] AS [t0]

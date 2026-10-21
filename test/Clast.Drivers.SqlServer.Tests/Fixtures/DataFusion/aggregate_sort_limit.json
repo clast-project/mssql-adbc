@@ -1,0 +1,290 @@
+{
+ "extensions": [
+  {
+   "extensionFunction": {
+    "functionAnchor": 1,
+    "name": "sum",
+    "extensionUrnReference": 4294967295
+   }
+  },
+  {
+   "extensionFunction": {
+    "name": "gt",
+    "extensionUrnReference": 4294967295
+   }
+  }
+ ],
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "fetch": {
+      "input": {
+       "sort": {
+        "input": {
+         "project": {
+          "common": {
+           "emit": {
+            "outputMapping": [
+             2,
+             3
+            ]
+           }
+          },
+          "input": {
+           "aggregate": {
+            "input": {
+             "project": {
+              "common": {
+               "emit": {
+                "outputMapping": [
+                 3,
+                 4
+                ]
+               }
+              },
+              "input": {
+               "filter": {
+                "input": {
+                 "read": {
+                  "baseSchema": {
+                   "names": [
+                    "id",
+                    "customer_id",
+                    "name",
+                    "price",
+                    "qty",
+                    "ts",
+                    "flag",
+                    "amount",
+                    "d"
+                   ],
+                   "struct": {
+                    "types": [
+                     {
+                      "i64": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "i64": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "string": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "fp64": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "i32": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "precisionTimestamp": {
+                       "precision": 6,
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "bool": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "decimal": {
+                       "scale": 2,
+                       "precision": 10,
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "date": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     }
+                    ],
+                    "nullability": "NULLABILITY_REQUIRED"
+                   }
+                  },
+                  "projection": {
+                   "select": {
+                    "structItems": [
+                     {
+                      "field": 2
+                     },
+                     {
+                      "field": 3
+                     },
+                     {
+                      "field": 4
+                     }
+                    ]
+                   }
+                  },
+                  "namedTable": {
+                   "names": [
+                    "orders"
+                   ]
+                  }
+                 }
+                },
+                "condition": {
+                 "scalarFunction": {
+                  "outputType": {
+                   "bool": {
+                    "nullability": "NULLABILITY_NULLABLE"
+                   }
+                  },
+                  "arguments": [
+                   {
+                    "value": {
+                     "selection": {
+                      "directReference": {
+                       "structField": {
+                        "field": 2
+                       }
+                      },
+                      "rootReference": {}
+                     }
+                    }
+                   },
+                   {
+                    "value": {
+                     "literal": {
+                      "i32": 5
+                     }
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              },
+              "expressions": [
+               {
+                "selection": {
+                 "directReference": {
+                  "structField": {}
+                 },
+                 "rootReference": {}
+                }
+               },
+               {
+                "selection": {
+                 "directReference": {
+                  "structField": {
+                   "field": 1
+                  }
+                 },
+                 "rootReference": {}
+                }
+               }
+              ]
+             }
+            },
+            "groupings": [
+             {
+              "expressionReferences": [
+               0
+              ]
+             }
+            ],
+            "measures": [
+             {
+              "measure": {
+               "functionReference": 1,
+               "invocation": "AGGREGATION_INVOCATION_ALL",
+               "arguments": [
+                {
+                 "value": {
+                  "selection": {
+                   "directReference": {
+                    "structField": {
+                     "field": 1
+                    }
+                   },
+                   "rootReference": {}
+                  }
+                 }
+                }
+               ]
+              }
+             }
+            ],
+            "groupingExpressions": [
+             {
+              "selection": {
+               "directReference": {
+                "structField": {}
+               },
+               "rootReference": {}
+              }
+             }
+            ]
+           }
+          },
+          "expressions": [
+           {
+            "selection": {
+             "directReference": {
+              "structField": {}
+             },
+             "rootReference": {}
+            }
+           },
+           {
+            "selection": {
+             "directReference": {
+              "structField": {
+               "field": 1
+              }
+             },
+             "rootReference": {}
+            }
+           }
+          ]
+         }
+        },
+        "sorts": [
+         {
+          "expr": {
+           "selection": {
+            "directReference": {
+             "structField": {
+              "field": 1
+             }
+            },
+            "rootReference": {}
+           }
+          },
+          "direction": "SORT_DIRECTION_DESC_NULLS_FIRST"
+         }
+        ]
+       }
+      },
+      "countExpr": {
+       "literal": {
+        "i64": "10"
+       }
+      }
+     }
+    },
+    "names": [
+     "name",
+     "total"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

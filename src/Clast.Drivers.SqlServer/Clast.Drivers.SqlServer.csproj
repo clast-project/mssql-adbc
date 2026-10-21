@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Substrait\Dialect\sqlserver_dialect.yaml" LogicalName="Clast.Drivers.SqlServer.sqlserver_dialect.yaml" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Apache.Arrow" />
     <ProjectReference Include="$(AdbcProject)" />
   </ItemGroup>

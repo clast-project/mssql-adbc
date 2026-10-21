@@ -1,0 +1,2 @@
+SELECT ([t0].[id] + CAST(1 AS bigint)) AS [a], ([t0].[price] * 2.5E0) AS [b], (CAST([t0].[qty] AS bigint) / CAST(2 AS bigint)) AS [c], ([t0].[id] % CAST(3 AS bigint)) AS [d], (- [t0].[price]) AS [e]
+FROM [orders] AS [t0]

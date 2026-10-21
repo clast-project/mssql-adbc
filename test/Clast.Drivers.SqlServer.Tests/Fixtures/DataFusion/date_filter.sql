@@ -1,0 +1,1 @@
+SELECT id FROM orders WHERE d >= DATE '2024-01-01' AND d < DATE '2025-01-01'
