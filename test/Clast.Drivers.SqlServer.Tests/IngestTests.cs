@@ -311,6 +311,49 @@ public class IngestTests
     }
 
     [SkippableFact]
+    public void BatchSizeCommitsAFullBatchBeforeTheNextRead()
+    {
+        using AdbcConnection connection = Connect();
+        Execute(connection, "CREATE TABLE #clast_batch_read (v int NOT NULL)");
+        var batch = new RecordBatch.Builder()
+            .Append("v", false, c => c.Int32(b => b.AppendRange(Enumerable.Range(0, 1000))))
+            .Build();
+
+        using (AdbcStatement statement = connection.BulkIngest(null, null, "clast_batch_read", BulkIngestMode.Append, true))
+        {
+            statement.SetOption(SqlServerParameters.IngestBatchSize, "1000");
+            statement.BindStream(new ListStream([batch], new InvalidOperationException("source failed")));
+            Exception ex = Assert.ThrowsAny<Exception>(() => statement.ExecuteUpdate());
+            Assert.Contains("source failed", ex.ToString());
+        }
+
+        // The full batch was committed before the failing read, and the session still works.
+        Assert.Equal(1000, Assert.Single(QueryTests.ReadAdbc(connection, "SELECT COUNT(*) FROM #clast_batch_read", out _, out _))[0]);
+    }
+
+    [SkippableFact]
+    public void BatchSizeKeepsEarlierBatchesOnServerError()
+    {
+        using AdbcConnection connection = Connect();
+        Execute(connection, "CREATE TABLE #clast_batch_dup (id int NOT NULL PRIMARY KEY)");
+        // The second batch of 1000 repeats a key within itself; the server rejects it in that batch's reply.
+        var batch = new RecordBatch.Builder()
+            .Append("id", false, c => c.Int32(b => b.AppendRange(Enumerable.Range(0, 2000).Select(i => i == 1500 ? 1499 : i))))
+            .Build();
+
+        using (AdbcStatement statement = connection.BulkIngest(null, null, "clast_batch_dup", BulkIngestMode.Append, true))
+        {
+            statement.SetOption(SqlServerParameters.IngestBatchSize, "1000");
+            statement.Bind(batch, batch.Schema);
+            var ex = Assert.ThrowsAny<AdbcException>(() => statement.ExecuteUpdate());
+            Assert.Contains("duplicate key", ex.Message);
+        }
+
+        // The first batch was committed, and the session still works.
+        Assert.Equal(1000, Assert.Single(QueryTests.ReadAdbc(connection, "SELECT COUNT(*) FROM #clast_batch_dup", out _, out _))[0]);
+    }
+
+    [SkippableFact]
     public void BatchSizeInsideTransactionRollsBack()
     {
         using AdbcConnection connection = Connect();
@@ -384,17 +427,26 @@ public class IngestTests
     private sealed class ListStream : IArrowArrayStream
     {
         private readonly Queue<RecordBatch> _batches;
+        private readonly Exception? _thenThrow;
 
-        public ListStream(List<RecordBatch> batches)
+        /// <param name="thenThrow">Thrown by the read after the last batch, in place of the end of the stream.</param>
+        public ListStream(List<RecordBatch> batches, Exception? thenThrow = null)
         {
             _batches = new Queue<RecordBatch>(batches);
+            _thenThrow = thenThrow;
             Schema = batches[0].Schema;
         }
 
         public Schema Schema { get; }
 
-        public ValueTask<RecordBatch?> ReadNextRecordBatchAsync(CancellationToken cancellationToken = default) =>
-            new ValueTask<RecordBatch?>(_batches.Count > 0 ? _batches.Dequeue() : null);
+        public ValueTask<RecordBatch?> ReadNextRecordBatchAsync(CancellationToken cancellationToken = default)
+        {
+            if (_batches.Count == 0 && _thenThrow != null)
+            {
+                throw _thenThrow;
+            }
+            return new ValueTask<RecordBatch?>(_batches.Count > 0 ? _batches.Dequeue() : null);
+        }
 
         public void Dispose()
         {

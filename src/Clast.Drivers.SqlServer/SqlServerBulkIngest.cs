@@ -135,9 +135,8 @@ internal static class SqlServerBulkIngest
                             {
                                 ThrowIfCancelled(session);
                             }
-                            if (loadRows == batchSize && batchSize > 0)
+                            if (!loading)
                             {
-                                EndLoad();
                                 BeginLoad();
                             }
                             writer.WriteByte((byte)TokenType.Row);
@@ -145,7 +144,12 @@ internal static class SqlServerBulkIngest
                             {
                                 encoders[c].Write(writer, row);
                             }
-                            loadRows++;
+                            // A full batch is committed now, not when the next row arrives:
+                            // a later read that fails or stalls must not hold it back.
+                            if (++loadRows == batchSize)
+                            {
+                                EndLoad();
+                            }
                         }
                         rows += length;
                     }
@@ -160,7 +164,11 @@ internal static class SqlServerBulkIngest
                 }
             }
 
-            EndLoad();
+            // Not after a full batch: that would send an empty one.
+            if (loading)
+            {
+                EndLoad();
+            }
         }
         catch (Exception) when (loading)
         {
