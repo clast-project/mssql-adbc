@@ -63,6 +63,15 @@ public static class SqlServerParameters
     /// <summary><c>true</c> to take a table lock during bulk ingestion (<c>INSERT BULK ... WITH (TABLOCK)</c>).</summary>
     public const string IngestTableLock = "adbc.mssql.ingest.table_lock";
 
+    /// <summary>
+    /// Statement option: rows per <c>INSERT BULK</c> during bulk ingestion, like
+    /// <c>SqlBulkCopy.BatchSize</c>. 0 (the default) sends all rows as one batch.
+    /// Each batch is all or nothing; under autocommit each commits on its own,
+    /// so a failure leaves the earlier batches in the table. Inside a
+    /// transaction they commit or roll back with it.
+    /// </summary>
+    public const string IngestBatchSize = "adbc.mssql.ingest.batch_size";
+
     /// <summary>Statement option: integer result column whose range is split for <c>ExecutePartitioned</c>.</summary>
     public const string PartitionColumn = "adbc.mssql.partition.column";
 

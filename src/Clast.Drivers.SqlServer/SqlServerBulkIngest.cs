@@ -46,11 +46,12 @@ internal sealed record IngestTarget(string? Catalog, string? DbSchema, string Ta
 /// <summary>
 /// Bulk ingestion with the TDS bulk-load protocol: an <c>INSERT BULK</c>
 /// statement, then one BulkLoad message holding COLMETADATA and a ROW token
-/// per row, encoded directly from the Arrow columns.
+/// per row, encoded directly from the Arrow columns. With a batch size, the
+/// rows are split into that many per <c>INSERT BULK</c> and message.
 /// </summary>
 internal static class SqlServerBulkIngest
 {
-    public static long Execute(TdsSession session, IngestTarget target, BulkIngestMode mode, IArrowArrayStream data, bool tableLock)
+    public static long Execute(TdsSession session, IngestTarget target, BulkIngestMode mode, IArrowArrayStream data, bool tableLock, int batchSize)
     {
         Schema schema = data.Schema;
 
@@ -72,24 +73,49 @@ internal static class SqlServerBulkIngest
             ? GetCollationNames(session, target)
             : new Dictionary<string, string>();
 
-        session.ExecuteNonQuery(InsertBulkSql(target, encoders, collations, tableLock));
-        return SendRows(session, encoders, data);
+        return SendRows(session, encoders, data, InsertBulkSql(target, encoders, collations, tableLock), batchSize);
     }
 
-    private static long SendRows(TdsSession session, ColumnEncoder[] encoders, IArrowArrayStream data)
+    private static long SendRows(TdsSession session, ColumnEncoder[] encoders, IArrowArrayStream data, string insertBulk, int batchSize)
     {
         PacketWriter writer = session.Writer;
         long rows = 0;
+        // Rows in the current BulkLoad message, and whether one is being sent.
+        int loadRows = 0;
+        bool loading = false;
 
-        session.BeginRequest(PacketType.BulkLoad);
-        try
+        void BeginLoad()
         {
+            session.ExecuteNonQuery(insertBulk);
+            session.BeginRequest(PacketType.BulkLoad);
+            loading = true;
+            loadRows = 0;
             writer.WriteByte((byte)TokenType.ColMetadata);
             writer.WriteUInt16((ushort)encoders.Length);
             foreach (ColumnEncoder encoder in encoders)
             {
                 encoder.Target.WriteBulkMetadata(writer);
             }
+        }
+
+        void EndLoad()
+        {
+            writer.WriteByte((byte)TokenType.Done);
+            writer.WriteUInt16(0); // status
+            writer.WriteUInt16(0); // current command
+            writer.WriteInt64(0);  // row count
+            // A failure sending the message still aborts it; one in the reply needs no abort.
+            session.EndRequest();
+            loading = false;
+
+            // The server's row counts are ignored: they vary (Fabric Warehouse's add up to
+            // twice the rows), and a load is all or nothing.
+            session.DrainResponse();
+        }
+
+        try
+        {
+            BeginLoad();
 
             while (data.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
             {
@@ -110,10 +136,20 @@ internal static class SqlServerBulkIngest
                             {
                                 ThrowIfCancelled(session);
                             }
+                            if (!loading)
+                            {
+                                BeginLoad();
+                            }
                             writer.WriteByte((byte)TokenType.Row);
                             for (int c = 0; c < encoders.Length; c++)
                             {
                                 encoders[c].Write(writer, row);
+                            }
+                            // A full batch is committed now, not when the next row arrives:
+                            // a later read that fails or stalls must not hold it back.
+                            if (++loadRows == batchSize)
+                            {
+                                EndLoad();
                             }
                         }
                         rows += length;
@@ -129,14 +165,16 @@ internal static class SqlServerBulkIngest
                 }
             }
 
-            writer.WriteByte((byte)TokenType.Done);
-            writer.WriteUInt16(0); // status
-            writer.WriteUInt16(0); // current command
-            writer.WriteInt64(0);  // row count
+            // Not after a full batch: that would send an empty one.
+            if (loading)
+            {
+                EndLoad();
+            }
         }
-        catch (Exception)
+        catch (Exception) when (loading)
         {
             // Discard what has been sent of the message; the server ignores it.
+            loading = false;
             session.EndRequest(abort: true);
             try
             {
@@ -148,11 +186,8 @@ internal static class SqlServerBulkIngest
             }
             throw;
         }
-        session.EndRequest();
 
-        // The rows sent, as SqlBulkCopy counts them: a load is all or nothing, and the
-        // counts servers report vary (Fabric Warehouse's add up to twice the rows).
-        session.DrainResponse();
+        // The rows sent, as SqlBulkCopy counts them.
         return rows;
     }
 

@@ -24,6 +24,8 @@ public sealed class LocalDbTests
             [SqlServerParameters.Server] = server,
             [SqlServerParameters.IntegratedSecurity] = "true",
             [SqlServerParameters.TrustServerCertificate] = "true",
+            // The first connect on a fresh machine creates and starts the automatic instance, which can outlast the default 15 seconds.
+            [SqlServerParameters.ConnectTimeout] = "60",
         };
         configure?.Invoke(options);
         return new SqlServerDriver().Open(options).Connect(null);

@@ -81,7 +81,8 @@ internal static class Analysis
         }
         if (mode == "client")
         {
-            ClientCpu.Run(iterations, args.Length > 3 ? args[3] : "read");
+            int[] batchSizes = args.Length > 4 ? args[4].Split(',').Select(s => int.Parse(s, CultureInfo.InvariantCulture)).ToArray() : [0];
+            ClientCpu.Run(iterations, args.Length > 3 ? args[3] : "read", batchSizes);
             return;
         }
         if (mode == "sessions")

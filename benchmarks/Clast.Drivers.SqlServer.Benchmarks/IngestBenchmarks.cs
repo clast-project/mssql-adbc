@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
 using System.Data;
+using System.Globalization;
 using Apache.Arrow;
 using Apache.Arrow.Adbc;
 using Apache.Arrow.Adbc.C;
@@ -38,6 +39,10 @@ public class IngestBenchmarks
 
     [ParamsSource(nameof(Drivers))]
     public string Driver { get; set; } = "";
+
+    /// <summary>Rows per batch for this driver and SqlClient; 0 for one batch. The Go driver has no such setting.</summary>
+    [Params(0)]
+    public int BatchSize { get; set; }
 
     public static IEnumerable<string> Drivers() => ReadBenchmarks.Drivers();
 
@@ -156,6 +161,7 @@ public class IngestBenchmarks
             {
                 DestinationTableName = TargetTable,
                 BulkCopyTimeout = 0,
+                BatchSize = BatchSize,
             };
             bulkCopy.WriteToServer(_table!);
             return _table!.Rows.Count;
@@ -168,6 +174,10 @@ public class IngestBenchmarks
         if (TableLock && Driver == "Clast")
         {
             statement.SetOption(SqlServerParameters.IngestTableLock, "true");
+        }
+        if (BatchSize > 0 && Driver == "Clast")
+        {
+            statement.SetOption(SqlServerParameters.IngestBatchSize, BatchSize.ToString(CultureInfo.InvariantCulture));
         }
         statement.BindStream(new BatchListStream(_batches));
         return statement.ExecuteUpdate().AffectedRows;
