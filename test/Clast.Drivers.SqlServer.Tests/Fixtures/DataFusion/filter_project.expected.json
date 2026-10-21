@@ -1,0 +1,21 @@
+{
+ "ordered": false,
+ "columns": [
+  "name",
+  "double_price"
+ ],
+ "rows": [
+  [
+   "apple",
+   6.0
+  ],
+  [
+   "cherry",
+   4.5
+  ],
+  [
+   "a.b",
+   200.0
+  ]
+ ]
+}

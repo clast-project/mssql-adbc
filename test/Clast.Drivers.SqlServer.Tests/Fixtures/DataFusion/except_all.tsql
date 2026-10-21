@@ -1,0 +1,3 @@
+SELECT [t0].[customer_id] AS [customer_id]
+FROM [orders] AS [t0]
+WHERE (NOT EXISTS (SELECT 1 FROM [customers] AS [t1] WHERE ([t0].[customer_id] IS NOT DISTINCT FROM [t1].[id])))

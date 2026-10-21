@@ -1,0 +1,21 @@
+{
+ "ordered": false,
+ "columns": [
+  "customer_id",
+  "total"
+ ],
+ "rows": [
+  [
+   30,
+   6.0
+  ],
+  [
+   20,
+   11.5
+  ],
+  [
+   40,
+   100.0
+  ]
+ ]
+}

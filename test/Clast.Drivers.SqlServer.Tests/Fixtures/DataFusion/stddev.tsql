@@ -1,0 +1,1 @@
+ERROR: Unsupported Substrait function 'stddev' has no T-SQL translation. The driver's Substrait dialect (SqlServerSubstrait.DialectYaml) lists the supported functions.

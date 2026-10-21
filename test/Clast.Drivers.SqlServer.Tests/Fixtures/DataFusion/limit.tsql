@@ -1,0 +1,3 @@
+SELECT TOP (3) [t0].[id] AS [id]
+FROM [orders] AS [t0]
+ORDER BY CASE WHEN [t0].[id] IS NULL THEN 1 ELSE 0 END, [t0].[id]

@@ -1,0 +1,12 @@
+SELECT [t3].[id] AS [id]
+FROM (
+SELECT [t0].[id] AS [id]
+FROM [orders] AS [t0]
+WHERE ([t0].[qty] > 5)
+UNION ALL
+SELECT [t1].[id] AS [id]
+FROM [customers] AS [t1]
+UNION ALL
+SELECT CAST(99 AS bigint) AS [id]
+FROM (VALUES (0)) AS [t2] ([_])
+) AS [t3]

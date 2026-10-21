@@ -1,0 +1,6 @@
+SELECT [t0].[column1] AS [x], [t0].[column2] AS [y]
+FROM (VALUES
+(CAST(1 AS bigint), N'a' COLLATE Latin1_General_100_BIN2_UTF8),
+(CAST(2 AS bigint), N'b' COLLATE Latin1_General_100_BIN2_UTF8),
+(CAST(3 AS bigint), CAST(NULL AS nvarchar(max)))
+) AS [t0] ([column1], [column2])

@@ -1,0 +1,1 @@
+ERROR: Unsupported Substrait construct: Cast from 'fp64' to string is not supported; SQL Server formats floating-point, binary and date/time values differently.

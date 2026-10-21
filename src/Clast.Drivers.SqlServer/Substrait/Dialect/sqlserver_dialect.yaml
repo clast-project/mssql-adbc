@@ -1,0 +1,1081 @@
+%YAML 1.2
+---
+# Substrait dialect for the Clast ADBC driver for SQL Server (T-SQL, SQL Server 2025).
+#
+# This file follows the Substrait dialect schema
+# (https://github.com/substrait-io/substrait/blob/main/text/dialect_schema.yaml)
+# and lists exactly what the driver's Substrait-to-T-SQL translation accepts.
+# A plan that uses only what is listed here translates to T-SQL; anything else
+# is rejected with an error. The translator's function catalog
+# (TSqlFunctionCatalog.cs) is checked against this file by a unit test.
+#
+# Conventions used below
+# ----------------------
+# * required_options: for each option, the behavior the translation delivers.
+#   A plan may omit the option (Substrait then lets the consumer choose) or
+#   list this value among its preferences. A function that can deliver several
+#   behaviors is listed once per behavior. Options not listed for a function
+#   cannot be delivered, and a plan that requests them is rejected.
+# * Behaviors marked "measured" were observed on SQL Server 2025 (17.0) with a
+#   session's default (ODBC) SET options, where Microsoft's documentation
+#   doesn't settle them.
+# * Constraints the dialect schema cannot express are recorded under
+#   metadata.tsql_constraints, for humans and for producers that read them.
+
+name: SQL Server
+
+metadata:
+  description: >
+    Substrait support of the Clast ADBC driver for SQL Server, which translates
+    Substrait plans into T-SQL. Written for SQL Server 2025 (17.x) at database
+    compatibility level 170.
+  tsql_reference: https://learn.microsoft.com/sql/t-sql/language-reference
+  substrait_version: "0.107.0"
+  server_requirements: >
+    Some functions need SQL Server 2022 (16.x) or later: least, greatest,
+    is_distinct_from, is_not_distinct_from, ltrim, rtrim, shift_left,
+    shift_right, shift_right_unsigned and median (APPROX_PERCENTILE_CONT).
+    product (PRODUCT) and the regexp_ functions (REGEXP_REPLACE, REGEXP_SUBSTR,
+    REGEXP_COUNT, REGEXP_INSTR) need SQL Server 2025. The default collation
+    (a UTF-8 collation) needs SQL Server 2019. Azure SQL Database has all of
+    them; Fabric Warehouse and Azure Synapse accept a subset of T-SQL, which
+    this file does not describe.
+  semantics:
+    strings: >
+      Every string value is given a collation, Latin1_General_100_BIN2_UTF8 by
+      default (statement option adbc.mssql.substrait.collation), which compares,
+      sorts and groups case-sensitively, by binary value: the closest SQL Server
+      comes to Substrait's semantics, with the differences below
+      (supplementary_characters, trailing_spaces).
+      An empty collation option leaves the columns' own collations (often
+      case-insensitive), which lets the server use indexes on them but changes
+      results.
+    supplementary_characters: >
+      SQL Server's strings are UTF-16, and its binary collations work on UTF-16
+      code units (measured): a character outside the Basic Multilingual Plane
+      (such as an emoji) counts as two in char_length, strpos, substring, left,
+      right and reverse, and such characters sort below U+E000-U+FFFF, where code
+      point order puts them above.
+    trailing_spaces: >
+      SQL Server pads the shorter of two strings with spaces before comparing
+      them, whatever the collation, so 'a' = 'a ' is true and the two group
+      together. LIKE patterns are Unicode, where trailing spaces count.
+    binary: >
+      SQL Server pads the shorter of two binary values with zero bytes before
+      comparing them, so 0x01 = 0x0100 is true.
+    null_ordering: >
+      SQL Server sorts nulls as the lowest values; nulls-last ascending and
+      nulls-first descending orders get an extra sort key.
+    floating_point: >
+      SQL Server's float and real cannot hold NaN or infinity: NaN and infinite
+      literals are rejected, is_nan and is_infinite are false for every non-null
+      value, and an overflow, division by zero or domain error (sqrt(-1), log(0),
+      asin(2), power(-8, 0.5)) raises an error.
+    errors: >
+      Integer overflow, division by zero and failed casts (unless cast with
+      RETURN_NULL, translated to TRY_CAST) raise errors, which end the query.
+    timestamps: >
+      Timestamps are datetime2, timestamps with a time zone datetimeoffset, both
+      with at most 100 ns (precision 7) and years 1 to 9999. Reducing a
+      timestamp's precision with a cast rounds (measured).
+    time_zones: >
+      The session time zone (current_timezone) is UTC, and current_timestamp and
+      current_date are taken from SYSUTCDATETIME(), once per query. SQL Server
+      knows Windows time zone names only, so time zone arguments must be
+      literals naming a zone with a fixed offset: UTC (or an alias such as
+      Etc/UTC), Etc/GMT+n or Etc/GMT-n, or an offset such as +05:30.
+    intervals: >
+      SQL Server has no interval type: interval_day and interval_year values can
+      only be literals added to or subtracted from dates and timestamps, in
+      whole multiples of 100 ns.
+    driver_column_types: >
+      The driver returns tinyint columns as uint8, which has no Substrait type;
+      datetimeoffset columns as the arrow.timestamp_with_offset extension type;
+      money and smallmoney as decimal(19,4) and decimal(10,4); xml, json and
+      hierarchyid as strings; and uniqueidentifier as the arrow.uuid extension
+      type (Substrait uuid). Columns of types the driver reports as strings but
+      that are not character data (xml, json, hierarchyid) can be read, but not
+      compared or passed to string functions.
+    limits: >
+      A CASE expression nests at most 10 deep, so deeply nested if_then and
+      switch expressions fail on the server. Very long IN lists may exhaust the
+      query processor (error 8623).
+
+dependencies:
+  arithmetic: extension:io.substrait:functions_arithmetic
+  arithmetic_decimal: extension:io.substrait:functions_arithmetic_decimal
+  comparison: extension:io.substrait:functions_comparison
+  boolean: extension:io.substrait:functions_boolean
+  string: extension:io.substrait:functions_string
+  datetime: extension:io.substrait:functions_datetime
+  rounding: extension:io.substrait:functions_rounding
+  rounding_decimal: extension:io.substrait:functions_rounding_decimal
+  logarithmic: extension:io.substrait:functions_logarithmic
+  aggregate_generic: extension:io.substrait:functions_aggregate_generic
+  aggregate_approx: extension:io.substrait:functions_aggregate_approx
+
+# ════════════════════════════════════════════════════════════════════
+# Types
+# ════════════════════════════════════════════════════════════════════
+# SQL Server has no signed 8-bit integer (tinyint is unsigned), no interval
+# types, and no list, map or struct types.
+
+supported_types:
+  - type: BOOL
+    metadata:
+      note: A bit value; T-SQL conditions are not values, so boolean expressions are converted between the two.
+    system_metadata: { name: bit, supported_as_column: true }
+  - type: I16
+    system_metadata: { name: smallint, supported_as_column: true }
+  - type: I32
+    system_metadata: { name: int, supported_as_column: true }
+  - type: I64
+    system_metadata: { name: bigint, supported_as_column: true }
+  - type: FP32
+    system_metadata: { name: real, supported_as_column: true }
+  - type: FP64
+    system_metadata: { name: float, supported_as_column: true }
+  - type: STRING
+    system_metadata: { name: "nvarchar(max)", supported_as_column: true }
+  - type: VARCHAR
+    max_length: 4000
+    metadata:
+      note: Columns only; casts to varchar are rejected, since SQL Server truncates without an error.
+    system_metadata: { name: nvarchar, supported_as_column: true }
+  - type: FIXED_CHAR
+    max_length: 4000
+    metadata:
+      note: Columns only; casts to fixedchar are rejected, since SQL Server truncates without an error.
+    system_metadata: { name: nchar, supported_as_column: true }
+  - type: BINARY
+    system_metadata: { name: "varbinary(max)", supported_as_column: true }
+  - type: FIXED_BINARY
+    max_length: 8000
+    system_metadata: { name: binary, supported_as_column: true }
+  - type: DATE
+    system_metadata: { name: date, supported_as_column: true }
+  - type: PRECISION_TIME
+    max_precision: 7
+    system_metadata: { name: time, supported_as_column: true }
+  - type: PRECISION_TIMESTAMP
+    max_precision: 7
+    system_metadata: { name: datetime2, supported_as_column: true }
+  - type: PRECISION_TIMESTAMP_TZ
+    max_precision: 7
+    metadata:
+      note: Values are instants; the driver returns datetimeoffset columns as arrow.timestamp_with_offset.
+    system_metadata: { name: datetimeoffset, supported_as_column: true }
+  - type: DECIMAL
+    max_precision: 38
+    max_scale: 38
+    system_metadata: { name: decimal, supported_as_column: true }
+  - type: UUID
+    system_metadata: { name: uniqueidentifier, supported_as_column: true }
+  - type: INTERVAL_DAY
+    max_precision: 9
+    metadata:
+      note: Literals only, as the interval argument of datetime add and subtract (applied with DATEADD).
+    system_metadata: { supported_as_column: false }
+  - type: INTERVAL_YEAR
+    metadata:
+      note: Literals only, as the interval argument of datetime add and subtract (applied with DATEADD).
+    system_metadata: { supported_as_column: false }
+
+# ════════════════════════════════════════════════════════════════════
+# Relations
+# ════════════════════════════════════════════════════════════════════
+
+supported_relations:
+  - relation: READ
+    read_types: [NAMED_TABLE, VIRTUAL_TABLE]
+    metadata:
+      tsql_constraints:
+        - "NamedTable names are [table], [schema, table], [database, schema, table] or [server, database, schema, table] (a linked server)."
+        - "base_schema is required and must be flat (no struct columns); its columns are read by name."
+        - "filter and best_effort_filter are applied; projection may select top-level columns only."
+  - relation: FILTER
+  - relation: PROJECT
+  - relation: FETCH
+    metadata:
+      tsql_constraints:
+        - "offset and count must be integers that refer to no columns (a TOP or OFFSET ... FETCH value)."
+  - relation: SORT
+    metadata:
+      tsql_constraints:
+        - "Sort fields use a sort direction; custom comparison functions are not supported."
+        - "Sorting by uuid values is not supported (SQL Server orders uniqueidentifier by its last bytes first)."
+  - relation: TOP_N
+    metadata:
+      tsql_constraints:
+        - "WITH TIES is supported without an offset only (TOP ... WITH TIES)."
+  - relation: AGGREGATE
+    metadata:
+      tsql_constraints:
+        - "Grouping sets are supported (GROUPING SETS), but not the same set twice: the set index column comes from GROUPING_ID."
+        - "Aggregate functions must use phase INITIAL_TO_RESULT; sort fields are supported for string_agg only."
+        - "DISTINCT invocation is supported for count, sum, sum0, avg, min, max, std_dev and variance."
+        - "Measure arguments and grouping keys may not contain subqueries."
+  - relation: JOIN
+    join_types: [INNER, OUTER, LEFT, RIGHT, LEFT_SEMI, RIGHT_SEMI, LEFT_ANTI, RIGHT_ANTI, LEFT_MARK, RIGHT_MARK]
+    metadata:
+      tsql_constraints:
+        - "Any join condition is supported; null keys never match, as for Substrait's equal."
+        - "Semi and anti joins are EXISTS and NOT EXISTS; LEFT_ANTI therefore has NOT EXISTS semantics, not NOT IN's null-aware semantics."
+        - "Mark joins are three-valued: the mark is null when no row matches and the condition is null for some row."
+  - relation: CROSS
+  - relation: SET
+    operations: [MINUS_PRIMARY, MINUS_PRIMARY_ALL, INTERSECTION_PRIMARY, INTERSECTION_MULTISET, INTERSECTION_MULTISET_ALL, UNION_DISTINCT, UNION_ALL]
+    metadata:
+      note: The ALL operations number duplicate rows with ROW_NUMBER, since T-SQL has no EXCEPT ALL or INTERSECT ALL.
+
+# ════════════════════════════════════════════════════════════════════
+# Expressions
+# ════════════════════════════════════════════════════════════════════
+
+supported_expressions:
+  - expression: LITERAL
+    metadata:
+      tsql_constraints:
+        - "Literals of the supported types only; no NaN or infinite floats; timestamps in years 1 to 9999 with at most 100 ns precision."
+  - expression: SELECTION
+    metadata:
+      tsql_constraints:
+        - "Direct references to top-level struct fields, and outer references by steps_out; no rel_reference, masked, list or map references."
+  - SCALAR_FUNCTION
+  - IF_THEN
+  - SWITCH
+  - SINGULAR_OR_LIST
+  - MULTI_OR_LIST
+  - expression: CAST
+    failure_options: [RETURN_NULL, THROW_EXCEPTION]
+    metadata:
+      tsql_constraints:
+        - "RETURN_NULL is TRY_CAST and THROW_EXCEPTION (or none) is CAST."
+        - "Casts to string from floating-point, binary, date and time values are rejected: SQL Server formats them differently. Booleans become 'true' or 'false', uuids lower-case text."
+        - "Casts to varchar, fixedchar, i8 and intervals are rejected; casts to binary only from binary values."
+        - "Casts from floating-point or decimal values to integers truncate (measured)."
+  - expression: SUBQUERY
+    subquery_types: [SCALAR, IN_PREDICATE, SET_PREDICATE, SET_COMPARISON]
+    metadata:
+      tsql_constraints:
+        - "IN_PREDICATE with one needle only; SET_PREDICATE with EXISTS only (T-SQL has no UNIQUE predicate)."
+  - expression: EXECUTION_CONTEXT_VARIABLE
+    variable_types: [CURRENT_TIMESTAMP, CURRENT_TIMEZONE, CURRENT_DATE]
+
+supported_execution_behavior:
+  supported_variable_evaluation_mode: [PER_PLAN]
+
+# ════════════════════════════════════════════════════════════════════
+# Scalar functions
+# ════════════════════════════════════════════════════════════════════
+
+supported_scalar_functions:
+
+  # ── functions_arithmetic ──────────────────────────────────────────
+  # Integer overflow raises an error; float arithmetic is IEEE 754 binary64/32.
+  - source: arithmetic
+    name: add
+    system_metadata: { name: "+", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: add
+    system_metadata: { name: "+", notation: INFIX }
+    required_options: { rounding: TIE_TO_EVEN }
+    supported_impls: [fp32_fp32, fp64_fp64]
+  - source: arithmetic
+    name: subtract
+    system_metadata: { name: "-", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: subtract
+    system_metadata: { name: "-", notation: INFIX }
+    required_options: { rounding: TIE_TO_EVEN }
+    supported_impls: [fp32_fp32, fp64_fp64]
+  - source: arithmetic
+    name: multiply
+    system_metadata: { name: "*", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: multiply
+    system_metadata: { name: "*", notation: INFIX }
+    required_options: { rounding: TIE_TO_EVEN }
+    supported_impls: [fp32_fp32, fp64_fp64]
+  - source: arithmetic
+    name: divide
+    metadata:
+      note: Integer division truncates toward zero. The NULL behaviors divide by NULLIF(divisor, 0).
+    system_metadata: { name: "/", notation: INFIX }
+    required_options: { on_division_by_zero: ERROR, on_domain_error: ERROR, overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: divide
+    system_metadata: { name: "/", notation: INFIX }
+    required_options: { on_division_by_zero: "NULL", on_domain_error: "NULL", overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: divide
+    system_metadata: { name: "/", notation: INFIX }
+    required_options: { on_division_by_zero: ERROR, on_domain_error: ERROR, rounding: TIE_TO_EVEN }
+    supported_impls: [fp32_fp32, fp64_fp64]
+  - source: arithmetic
+    name: divide
+    system_metadata: { name: "/", notation: INFIX }
+    required_options: { on_division_by_zero: "NULL", on_domain_error: "NULL", rounding: TIE_TO_EVEN }
+    supported_impls: [fp32_fp32, fp64_fp64]
+  - source: arithmetic
+    name: modulus
+    metadata:
+      note: T-SQL's % operator gives the truncated remainder; the floored one is computed from it.
+    system_metadata: { name: "%", notation: INFIX }
+    required_options: { division_type: TRUNCATE, on_domain_error: ERROR, overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: modulus
+    system_metadata: { name: "%", notation: INFIX }
+    required_options: { division_type: TRUNCATE, on_domain_error: "NULL", overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: modulus
+    system_metadata: { name: "%", notation: INFIX }
+    required_options: { division_type: FLOOR, on_domain_error: ERROR, overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: modulus
+    system_metadata: { name: "%", notation: INFIX }
+    required_options: { division_type: FLOOR, on_domain_error: "NULL", overflow: ERROR }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: negate
+    system_metadata: { name: "-", notation: PREFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16, i32, i64]
+  - source: arithmetic
+    name: negate
+    system_metadata: { name: "-", notation: PREFIX }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: abs
+    system_metadata: { name: ABS }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16, i32, i64]
+  - source: arithmetic
+    name: abs
+    system_metadata: { name: ABS }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: sign
+    system_metadata: { name: SIGN }
+    supported_impls: [i16, i32, i64, fp32, fp64]
+  - source: arithmetic
+    name: power
+    metadata:
+      note: >
+        A negative base with a fractional exponent raises an error (there is no option to declare this).
+        power:i64_i64 is not supported, because POWER computes in float and loses digits (3^39 measured).
+    system_metadata: { name: POWER }
+    supported_impls: [fp32_fp32, fp64_fp64]
+  - source: arithmetic
+    name: sqrt
+    system_metadata: { name: SQRT }
+    required_options: { on_domain_error: ERROR }
+    supported_impls: [i64, fp32, fp64]
+  - source: arithmetic
+    name: exp
+    system_metadata: { name: EXP }
+    supported_impls: [i64, fp32, fp64]
+  - source: arithmetic
+    name: sin
+    system_metadata: { name: SIN }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: cos
+    system_metadata: { name: COS }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: tan
+    system_metadata: { name: TAN }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: atan
+    system_metadata: { name: ATAN }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: radians
+    system_metadata: { name: RADIANS }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: degrees
+    system_metadata: { name: DEGREES }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: asin
+    system_metadata: { name: ASIN }
+    required_options: { on_domain_error: ERROR }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: acos
+    system_metadata: { name: ACOS }
+    required_options: { on_domain_error: ERROR }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: bitwise_and
+    system_metadata: { name: "&", notation: INFIX }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: bitwise_or
+    system_metadata: { name: "|", notation: INFIX }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: bitwise_xor
+    system_metadata: { name: "^", notation: INFIX }
+    supported_impls: [i16_i16, i32_i32, i64_i64]
+  - source: arithmetic
+    name: bitwise_not
+    system_metadata: { name: "~", notation: PREFIX }
+    supported_impls: [i16, i32, i64]
+  - source: arithmetic
+    name: shift_left
+    metadata:
+      note: Shifting by the type's width or more gives 0 (measured).
+    system_metadata: { name: LEFT_SHIFT }
+    supported_impls: [i32_i32, i64_i32]
+  - source: arithmetic
+    name: shift_right
+    metadata:
+      note: RIGHT_SHIFT is logical (measured); a negative value is shifted as the complement of its complement.
+    system_metadata: { name: RIGHT_SHIFT }
+    supported_impls: [i32_i32, i64_i32]
+  - source: arithmetic
+    name: shift_right_unsigned
+    system_metadata: { name: RIGHT_SHIFT }
+    supported_impls: [i32_i32, i64_i32]
+
+  # ── functions_arithmetic_decimal ──────────────────────────────────
+  # Results are cast to the type Substrait derives; for division SQL Server's own
+  # result type has less precision, which the cast cannot restore.
+  - source: arithmetic_decimal
+    name: add
+    system_metadata: { name: "+", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec_dec]
+  - source: arithmetic_decimal
+    name: subtract
+    system_metadata: { name: "-", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec_dec]
+  - source: arithmetic_decimal
+    name: multiply
+    system_metadata: { name: "*", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec_dec]
+  - source: arithmetic_decimal
+    name: divide
+    system_metadata: { name: "/", notation: INFIX }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec_dec]
+  - source: arithmetic_decimal
+    name: negate
+    system_metadata: { name: "-", notation: PREFIX }
+    supported_impls: [dec]
+  - source: arithmetic_decimal
+    name: abs
+    system_metadata: { name: ABS }
+    supported_impls: [dec]
+
+  # ── functions_comparison ──────────────────────────────────────────
+  # Strings compare with the query's collation; see metadata.semantics.trailing_spaces.
+  - source: comparison
+    name: equal
+    system_metadata: { name: "=", notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: not_equal
+    system_metadata: { name: "<>", notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: lt
+    metadata:
+      tsql_constraints:
+        - "lt, lte, gt, gte and between are not supported on uuid values (SQL Server orders uniqueidentifier by its last bytes first)."
+    system_metadata: { name: "<", notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: lte
+    system_metadata: { name: "<=", notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: gt
+    system_metadata: { name: ">", notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: gte
+    system_metadata: { name: ">=", notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: between
+    system_metadata: { name: BETWEEN, notation: INFIX }
+    supported_impls: [any_any_any]
+  - source: comparison
+    name: is_null
+    system_metadata: { name: IS NULL, notation: POSTFIX }
+    supported_impls: [any]
+  - source: comparison
+    name: is_not_null
+    system_metadata: { name: IS NOT NULL, notation: POSTFIX }
+    supported_impls: [any]
+  - source: comparison
+    name: is_nan
+    metadata:
+      note: Always false for non-null values (SQL Server floats cannot be NaN).
+    system_metadata: { name: CASE }
+    supported_impls: [fp32, fp64]
+  - source: comparison
+    name: is_finite
+    system_metadata: { name: CASE }
+    supported_impls: [fp32, fp64]
+  - source: comparison
+    name: is_infinite
+    system_metadata: { name: CASE }
+    supported_impls: [fp32, fp64]
+  - source: comparison
+    name: is_true
+    system_metadata: { name: CASE }
+    supported_impls: [bool]
+  - source: comparison
+    name: is_not_true
+    system_metadata: { name: CASE }
+    supported_impls: [bool]
+  - source: comparison
+    name: is_false
+    system_metadata: { name: CASE }
+    supported_impls: [bool]
+  - source: comparison
+    name: is_not_false
+    system_metadata: { name: CASE }
+    supported_impls: [bool]
+  - source: comparison
+    name: nullif
+    system_metadata: { name: NULLIF }
+    supported_impls: [any_any]
+  - source: comparison
+    name: coalesce
+    system_metadata: { name: COALESCE }
+    supported_impls: [any]
+    variadic: { min: 2 }
+  - source: comparison
+    name: is_distinct_from
+    system_metadata: { name: IS DISTINCT FROM, notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: is_not_distinct_from
+    system_metadata: { name: IS NOT DISTINCT FROM, notation: INFIX }
+    supported_impls: [any_any]
+  - source: comparison
+    name: least
+    metadata:
+      note: LEAST skips nulls; the translation returns null when an argument is null.
+    system_metadata: { name: LEAST }
+    supported_impls: [any]
+    variadic: { min: 2, max: 254 }
+  - source: comparison
+    name: least_skip_null
+    system_metadata: { name: LEAST }
+    supported_impls: [any]
+    variadic: { min: 2, max: 254 }
+  - source: comparison
+    name: greatest
+    system_metadata: { name: GREATEST }
+    supported_impls: [any]
+    variadic: { min: 2, max: 254 }
+  - source: comparison
+    name: greatest_skip_null
+    system_metadata: { name: GREATEST }
+    supported_impls: [any]
+    variadic: { min: 2, max: 254 }
+
+  # ── functions_boolean ─────────────────────────────────────────────
+  # The extension allows and()/or() with zero arguments (true/false), which the
+  # dialect schema cannot express (variadic.min must be at least 1).
+  - source: boolean
+    name: and
+    system_metadata: { name: AND, notation: INFIX }
+    supported_impls: [bool]
+    variadic: {}
+  - source: boolean
+    name: or
+    system_metadata: { name: OR, notation: INFIX }
+    supported_impls: [bool]
+    variadic: {}
+  - source: boolean
+    name: not
+    system_metadata: { name: NOT, notation: PREFIX }
+    supported_impls: [bool]
+  - source: boolean
+    name: and_not
+    system_metadata: { name: AND NOT, notation: INFIX }
+    supported_impls: [bool_bool]
+  - source: boolean
+    name: xor
+    system_metadata: { name: "<>", notation: INFIX }
+    supported_impls: [bool_bool]
+
+  # ── functions_string ──────────────────────────────────────────────
+  # Character positions and lengths count UTF-16 code units (see metadata.semantics).
+  # The case_sensitivity behaviors apply the binary collation (CASE_SENSITIVE) or
+  # Latin1_General_100_CI_AS_KS_WS_SC_UTF8 (CASE_INSENSITIVE, which also ignores
+  # characters such as the soft hyphen, as linguistic collations do); without the
+  # option, the query's collation decides.
+  - source: string
+    name: concat
+    system_metadata: { name: CONCAT }
+    required_options: { null_handling: IGNORE_NULLS }
+    supported_impls: [str]
+    variadic: { min: 1, max: 253 }
+  - source: string
+    name: concat
+    system_metadata: { name: "+", notation: INFIX }
+    required_options: { null_handling: ACCEPT_NULLS }
+    supported_impls: [str]
+    variadic: { min: 1, max: 254 }
+  - source: string
+    name: like
+    metadata:
+      note: "'%' and '_' are the only wildcards; T-SQL's '[' is escaped. There is no escape character, so a backslash is an ordinary character."
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_SENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: like
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_INSENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: starts_with
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_SENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: starts_with
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_INSENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: ends_with
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_SENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: ends_with
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_INSENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: contains
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_SENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: contains
+    system_metadata: { name: LIKE, notation: INFIX }
+    required_options: { case_sensitivity: CASE_INSENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: substring
+    system_metadata: { name: SUBSTRING }
+    required_options: { negative_start: LEFT_OF_BEGINNING }
+    supported_impls: [str_i32_i32, str_i32]
+  - source: string
+    name: strpos
+    system_metadata: { name: CHARINDEX }
+    required_options: { case_sensitivity: CASE_SENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: strpos
+    system_metadata: { name: CHARINDEX }
+    required_options: { case_sensitivity: CASE_INSENSITIVE }
+    supported_impls: [str_str]
+  - source: string
+    name: replace
+    system_metadata: { name: REPLACE }
+    required_options: { case_sensitivity: CASE_SENSITIVE }
+    supported_impls: [str_str_str]
+  - source: string
+    name: replace
+    system_metadata: { name: REPLACE }
+    required_options: { case_sensitivity: CASE_INSENSITIVE }
+    supported_impls: [str_str_str]
+  - source: string
+    name: repeat
+    system_metadata: { name: REPLICATE }
+    supported_impls: [str_i64]
+  - source: string
+    name: reverse
+    system_metadata: { name: REVERSE }
+    supported_impls: [str]
+  - source: string
+    name: lower
+    system_metadata: { name: LOWER }
+    required_options: { char_set: UTF8 }
+    supported_impls: [str]
+  - source: string
+    name: upper
+    system_metadata: { name: UPPER }
+    required_options: { char_set: UTF8 }
+    supported_impls: [str]
+  - source: string
+    name: char_length
+    metadata:
+      note: LEN ignores trailing spaces, so spaces are replaced before counting.
+    system_metadata: { name: LEN }
+    supported_impls: [str]
+  - source: string
+    name: octet_length
+    metadata:
+      note: The length of the string's UTF-8 encoding.
+    system_metadata: { name: DATALENGTH }
+    supported_impls: [str]
+  - source: string
+    name: bit_length
+    system_metadata: { name: DATALENGTH }
+    supported_impls: [str]
+  - source: string
+    name: ltrim
+    metadata:
+      note: A characters argument that is not a literal is cast to nvarchar(4000), which T-SQL requires.
+    system_metadata: { name: LTRIM }
+    supported_impls: [str_str]
+  - source: string
+    name: rtrim
+    system_metadata: { name: RTRIM }
+    supported_impls: [str_str]
+  - source: string
+    name: trim
+    system_metadata: { name: TRIM }
+    supported_impls: [str_str]
+  - source: string
+    name: left
+    system_metadata: { name: LEFT }
+    supported_impls: [str_i32]
+  - source: string
+    name: right
+    system_metadata: { name: RIGHT }
+    supported_impls: [str_i32]
+  - source: string
+    name: regexp_replace
+    metadata:
+      tsql_constraints:
+        - "SQL Server's regular expressions are RE2, not ICU: patterns must be literals, and ICU-only constructs (lookaround, backreferences, atomic groups, possessive quantifiers, \\Z and similar escapes) are rejected."
+        - "The replacement must be a literal; ICU's $n group references become RE2's \\n."
+    system_metadata: { name: REGEXP_REPLACE }
+    required_options: { case_sensitivity: CASE_SENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str_str, str_str_str_i64_i64]
+  - source: string
+    name: regexp_replace
+    system_metadata: { name: REGEXP_REPLACE }
+    required_options: { case_sensitivity: CASE_INSENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str_str, str_str_str_i64_i64]
+  - source: string
+    name: regexp_match_substring
+    system_metadata: { name: REGEXP_SUBSTR }
+    required_options: { case_sensitivity: CASE_SENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str, str_str_i64_i64_i64]
+  - source: string
+    name: regexp_match_substring
+    system_metadata: { name: REGEXP_SUBSTR }
+    required_options: { case_sensitivity: CASE_INSENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str, str_str_i64_i64_i64]
+  - source: string
+    name: regexp_count_substring
+    system_metadata: { name: REGEXP_COUNT }
+    required_options: { case_sensitivity: CASE_SENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str, str_str_i64]
+  - source: string
+    name: regexp_count_substring
+    system_metadata: { name: REGEXP_COUNT }
+    required_options: { case_sensitivity: CASE_INSENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str, str_str_i64]
+  - source: string
+    name: regexp_strpos
+    system_metadata: { name: REGEXP_INSTR }
+    required_options: { case_sensitivity: CASE_SENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str_i64_i64]
+  - source: string
+    name: regexp_strpos
+    system_metadata: { name: REGEXP_INSTR }
+    required_options: { case_sensitivity: CASE_INSENSITIVE, multiline: MULTILINE_DISABLED, dotall: DOTALL_DISABLED }
+    supported_impls: [str_str_i64_i64]
+
+  # ── functions_datetime ────────────────────────────────────────────
+  - source: datetime
+    name: extract
+    metadata:
+      tsql_constraints:
+        - "Supported components: YEAR, ISO_YEAR, US_YEAR, QUARTER, MONTH, DAY, DAY_OF_YEAR, MONDAY_DAY_OF_WEEK, SUNDAY_DAY_OF_WEEK, ISO_WEEK, US_WEEK, HOUR, MINUTE, SECOND, MILLISECOND, MICROSECOND, NANOSECOND, SUBSECOND, UNIX_TIME."
+        - "The time zone argument must be a literal naming a zone with a fixed offset (see metadata.semantics.time_zones)."
+      note: Days of the week are computed from a known Monday, so they don't depend on SET DATEFIRST.
+    system_metadata: { name: DATEPART }
+    supported_impls: [req_pts, req_ptstz_str, req_date, req_pt, req_req_pts, req_req_ptstz_str, req_req_date]
+  - source: datetime
+    name: extract_boolean
+    metadata:
+      tsql_constraints:
+        - "Supported components: IS_LEAP_YEAR."
+    system_metadata: { name: DATEPART }
+    supported_impls: [req_pts, req_ptstz_str, req_date]
+  - source: datetime
+    name: add
+    metadata:
+      tsql_constraints:
+        - "The interval must be a literal, in whole multiples of 100 ns; it is applied with DATEADD (months at the end of a month clamp to its last day)."
+    system_metadata: { name: DATEADD }
+    supported_impls: [pts_iday, ptstz_iday, date_iday, pts_iyear, ptstz_iyear_str, date_iyear]
+  - source: datetime
+    name: subtract
+    system_metadata: { name: DATEADD }
+    supported_impls: [pts_iday, ptstz_iday, date_iday, pts_iyear, ptstz_iyear_str, date_iyear]
+  - source: datetime
+    name: lt
+    system_metadata: { name: "<", notation: INFIX }
+    supported_impls: [pts_pts, ptstz_ptstz, date_date]
+  - source: datetime
+    name: lte
+    system_metadata: { name: "<=", notation: INFIX }
+    supported_impls: [pts_pts, ptstz_ptstz, date_date]
+  - source: datetime
+    name: gt
+    system_metadata: { name: ">", notation: INFIX }
+    supported_impls: [pts_pts, ptstz_ptstz, date_date]
+  - source: datetime
+    name: gte
+    system_metadata: { name: ">=", notation: INFIX }
+    supported_impls: [pts_pts, ptstz_ptstz, date_date]
+  - source: datetime
+    name: assume_timezone
+    system_metadata: { name: TODATETIMEOFFSET }
+    supported_impls: [pts_str]
+  - source: datetime
+    name: local_timestamp
+    system_metadata: { name: SWITCHOFFSET }
+    supported_impls: [ptstz_str]
+
+  # ── functions_rounding ────────────────────────────────────────────
+  - source: rounding
+    name: ceil
+    system_metadata: { name: CEILING }
+    supported_impls: [fp32, fp64]
+  - source: rounding
+    name: floor
+    system_metadata: { name: FLOOR }
+    supported_impls: [fp32, fp64]
+  - source: rounding
+    name: round
+    metadata:
+      note: Measured - ties round away from zero, for float as for exact values (2.5 to 3, -2.5 to -3, 0.125 to 0.13).
+    system_metadata: { name: ROUND }
+    required_options: { rounding: TIE_AWAY_FROM_ZERO }
+    supported_impls: [i16_i32, i32_i32, i64_i32, fp32_i32, fp64_i32]
+  - source: rounding
+    name: round
+    system_metadata: { name: ROUND }
+    required_options: { rounding: TRUNCATE }
+    supported_impls: [i16_i32, i32_i32, i64_i32, fp32_i32, fp64_i32]
+
+  # ── functions_rounding_decimal ────────────────────────────────────
+  - source: rounding_decimal
+    name: ceil
+    system_metadata: { name: CEILING }
+    supported_impls: [dec]
+  - source: rounding_decimal
+    name: floor
+    system_metadata: { name: FLOOR }
+    supported_impls: [dec]
+  - source: rounding_decimal
+    name: round
+    system_metadata: { name: ROUND }
+    required_options: { rounding: TIE_AWAY_FROM_ZERO }
+    supported_impls: [dec_i32]
+  - source: rounding_decimal
+    name: round
+    system_metadata: { name: ROUND }
+    required_options: { rounding: TRUNCATE }
+    supported_impls: [dec_i32]
+
+  # ── functions_logarithmic ─────────────────────────────────────────
+  - source: logarithmic
+    name: ln
+    system_metadata: { name: LOG }
+    required_options: { on_domain_error: ERROR, on_log_zero: ERROR }
+    supported_impls: [i64, fp32, fp64, dec]
+  - source: logarithmic
+    name: log10
+    system_metadata: { name: LOG10 }
+    required_options: { on_domain_error: ERROR, on_log_zero: ERROR }
+    supported_impls: [i64, fp32, fp64, dec]
+  - source: logarithmic
+    name: log2
+    system_metadata: { name: LOG }
+    required_options: { on_domain_error: ERROR, on_log_zero: ERROR }
+    supported_impls: [i64, fp32, fp64, dec]
+  - source: logarithmic
+    name: logb
+    system_metadata: { name: LOG }
+    required_options: { on_domain_error: ERROR, on_log_zero: ERROR }
+    supported_impls: [i64_i64, fp32_fp32, fp64_fp64, dec_dec]
+
+# ════════════════════════════════════════════════════════════════════
+# Aggregate functions
+# ════════════════════════════════════════════════════════════════════
+# A measure's filter is applied by passing null for excluded rows (CASE WHEN),
+# which aggregates skip; T-SQL has no FILTER clause.
+
+supported_aggregate_functions:
+  - source: arithmetic
+    name: sum
+    metadata:
+      note: Integers are summed as bigint, floats as float.
+    system_metadata: { name: SUM }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16, i32, i64, fp32, fp64]
+  - source: arithmetic
+    name: sum0
+    system_metadata: { name: SUM }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16, i32, i64, fp32, fp64]
+  - source: arithmetic
+    name: avg
+    metadata:
+      note: Integer averages truncate (measured), as Substrait specifies.
+    system_metadata: { name: AVG }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16, i32, i64]
+  - source: arithmetic
+    name: avg
+    system_metadata: { name: AVG }
+    required_options: { overflow: ERROR }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: min
+    system_metadata: { name: MIN }
+    supported_impls: [i16, i32, i64, fp32, fp64]
+  - source: arithmetic
+    name: max
+    system_metadata: { name: MAX }
+    supported_impls: [i16, i32, i64, fp32, fp64]
+  - source: arithmetic
+    name: product
+    system_metadata: { name: PRODUCT }
+    required_options: { overflow: ERROR }
+    supported_impls: [i16, i32, i64]
+  - source: arithmetic
+    name: product
+    system_metadata: { name: PRODUCT }
+    supported_impls: [fp64]
+  - source: arithmetic
+    name: std_dev
+    metadata:
+      note: SAMPLE maps to STDEV, POPULATION to STDEVP.
+    system_metadata: { name: STDEV }
+    supported_impls: [req_fp32, req_fp64]
+  - source: arithmetic
+    name: std_dev
+    system_metadata: { name: STDEV }
+    required_options: { distribution: SAMPLE }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: std_dev
+    system_metadata: { name: STDEVP }
+    required_options: { distribution: POPULATION }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: variance
+    metadata:
+      note: SAMPLE maps to VAR, POPULATION to VARP.
+    system_metadata: { name: VAR }
+    supported_impls: [req_fp32, req_fp64]
+  - source: arithmetic
+    name: variance
+    system_metadata: { name: VAR }
+    required_options: { distribution: SAMPLE }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: variance
+    system_metadata: { name: VARP }
+    required_options: { distribution: POPULATION }
+    supported_impls: [fp32, fp64]
+  - source: arithmetic
+    name: median
+    metadata:
+      tsql_constraints:
+        - "Only the APPROXIMATE enumeration value is supported (APPROX_PERCENTILE_CONT); T-SQL's exact PERCENTILE_CONT is a window function only."
+    system_metadata: { name: APPROX_PERCENTILE_CONT }
+    supported_impls: [req_fp64]
+  - source: arithmetic_decimal
+    name: sum
+    system_metadata: { name: SUM }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec]
+  - source: arithmetic_decimal
+    name: sum0
+    system_metadata: { name: SUM }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec]
+  - source: arithmetic_decimal
+    name: avg
+    system_metadata: { name: AVG }
+    required_options: { overflow: ERROR }
+    supported_impls: [dec]
+  - source: arithmetic_decimal
+    name: min
+    system_metadata: { name: MIN }
+    supported_impls: [dec]
+  - source: arithmetic_decimal
+    name: max
+    system_metadata: { name: MAX }
+    supported_impls: [dec]
+  - source: boolean
+    name: bool_and
+    system_metadata: { name: MIN }
+    supported_impls: [bool]
+  - source: boolean
+    name: bool_or
+    system_metadata: { name: MAX }
+    supported_impls: [bool]
+  - source: string
+    name: string_agg
+    metadata:
+      tsql_constraints:
+        - "The separator must be a string literal; the aggregate's sort fields become WITHIN GROUP (ORDER BY ...). DISTINCT is not supported."
+    system_metadata: { name: STRING_AGG }
+    supported_impls: [str_str]
+  - source: datetime
+    name: min
+    system_metadata: { name: MIN }
+    supported_impls: [date, pt, pts, ptstz]
+  - source: datetime
+    name: max
+    system_metadata: { name: MAX }
+    supported_impls: [date, pt, pts, ptstz]
+  - source: aggregate_generic
+    name: count
+    system_metadata: { name: COUNT_BIG }
+    required_options: { overflow: ERROR }
+    supported_impls: [any, ""]
+  - source: aggregate_generic
+    name: any_value
+    metadata:
+      note: MAX of the values, which is not null when some value is not.
+    system_metadata: { name: MAX }
+    required_options: { ignore_nulls: "TRUE" }
+    supported_impls: [any]
+  - source: aggregate_generic
+    name: any_value
+    system_metadata: { name: MAX }
+    required_options: { ignore_nulls: "FALSE" }
+    supported_impls: [any]
+  - source: aggregate_approx
+    name: approx_count_distinct
+    system_metadata: { name: APPROX_COUNT_DISTINCT }
+    supported_impls: [any]

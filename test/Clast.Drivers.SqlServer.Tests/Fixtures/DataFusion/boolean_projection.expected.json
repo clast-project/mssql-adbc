@@ -1,0 +1,65 @@
+{
+ "ordered": false,
+ "columns": [
+  "id",
+  "flag",
+  "nf",
+  "both"
+ ],
+ "rows": [
+  [
+   1,
+   true,
+   false,
+   true
+  ],
+  [
+   2,
+   false,
+   true,
+   false
+  ],
+  [
+   3,
+   null,
+   null,
+   null
+  ],
+  [
+   4,
+   true,
+   false,
+   true
+  ],
+  [
+   5,
+   false,
+   true,
+   false
+  ],
+  [
+   6,
+   true,
+   false,
+   false
+  ],
+  [
+   7,
+   null,
+   null,
+   null
+  ],
+  [
+   8,
+   false,
+   true,
+   false
+  ],
+  [
+   9,
+   true,
+   false,
+   false
+  ]
+ ]
+}

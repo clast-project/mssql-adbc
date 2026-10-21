@@ -1,0 +1,2 @@
+# Substrait plan fixtures are binary protobuf.
+*.pb binary

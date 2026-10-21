@@ -1,0 +1,2 @@
+SELECT CONCAT(CAST(N'' AS nvarchar(max)) COLLATE Latin1_General_100_BIN2_UTF8, [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8, N'x' COLLATE Latin1_General_100_BIN2_UTF8) AS [c]
+FROM [orders] AS [t0]

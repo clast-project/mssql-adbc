@@ -5,16 +5,21 @@ using Apache.Arrow;
 using Apache.Arrow.Adbc;
 using Apache.Arrow.Ipc;
 using Clast.Drivers.SqlServer.Arrow;
+using Clast.Drivers.SqlServer.Substrait;
 using Clast.Drivers.SqlServer.Tds;
 
 namespace Clast.Drivers.SqlServer;
 
 /// <summary>
-/// Executes SQL batches and bulk ingestion on a <see cref="SqlServerConnection"/>.
+/// Executes SQL batches, Substrait plans (translated to T-SQL) and bulk
+/// ingestion on a <see cref="SqlServerConnection"/>.
 /// </summary>
 public sealed class SqlServerStatement : AdbcStatement
 {
     private readonly SqlServerConnection _connection;
+    private string? _sqlQuery;
+    private byte[]? _substraitPlan;
+    private string _substraitCollation = SqlServerSubstrait.DefaultCollation;
     private string? _targetCatalog;
     private string? _targetDbSchema;
     private string? _targetTable;
@@ -33,6 +38,56 @@ public sealed class SqlServerStatement : AdbcStatement
     internal SqlServerStatement(SqlServerConnection connection)
     {
         _connection = connection;
+    }
+
+    /// <summary>The SQL to execute; setting it replaces any Substrait plan.</summary>
+    public override string? SqlQuery
+    {
+        get => _sqlQuery;
+        set
+        {
+            _sqlQuery = value;
+            if (value != null)
+            {
+                _substraitPlan = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A Substrait plan to execute, translated to T-SQL; setting it replaces
+    /// any SQL query. <see cref="SqlServerSubstrait.DialectYaml"/> describes
+    /// what can be translated.
+    /// </summary>
+    public override byte[]? SubstraitPlan
+    {
+        get => _substraitPlan;
+        set
+        {
+            _substraitPlan = value;
+            if (value != null)
+            {
+                _sqlQuery = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The SQL to run: the query, or the translation of the Substrait plan.
+    /// <paramref name="nested"/> asks for a translation that can be used as a
+    /// derived table (for partitioned reads).
+    /// </summary>
+    private string Query(bool nested = false)
+    {
+        if (_sqlQuery != null)
+        {
+            return _sqlQuery;
+        }
+        if (_substraitPlan != null)
+        {
+            return SqlServerSubstrait.Translate(_substraitPlan, _substraitCollation, nested);
+        }
+        throw new AdbcException("SqlQuery or SubstraitPlan must be set", AdbcStatusCode.InvalidState);
     }
 
     public override void SetOption(string key, string value)
@@ -74,6 +129,9 @@ public sealed class SqlServerStatement : AdbcStatement
                 _incremental = ParseBool(key, value);
                 _incrementalPending = null;
                 break;
+            case SqlServerParameters.SubstraitCollation:
+                _substraitCollation = value.Length == 0 ? value : SqlServerSubstrait.CheckCollation(value);
+                break;
             case SqlServerParameters.PartitionCount:
                 if (!int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _partitionCount) || _partitionCount < 1)
                 {
@@ -98,6 +156,8 @@ public sealed class SqlServerStatement : AdbcStatement
         SqlServerParameters.PartitionColumn => _partitionColumn,
         SqlServerParameters.PartitionCount => SqlServerParameters.Format(_partitionCount),
         SqlServerParameters.ParallelReads => SqlServerParameters.Format(_parallelReads ?? _connection.Session.Settings.ParallelReads),
+        SqlServerParameters.SubstraitCollation => _substraitCollation,
+        SqlServerParameters.SubstraitSql => _substraitPlan == null ? null : Query(),
         _ => null,
     } ?? throw SqlServerParameters.OptionNotFound(key);
 
@@ -132,21 +192,31 @@ public sealed class SqlServerStatement : AdbcStatement
 
     public override QueryResult ExecuteQuery()
     {
-        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
         if (TakeBoundStream() is IArrowArrayStream parameters)
         {
-            return new QueryResult(-1, SqlServerRpc.ExecuteQuery(session, sql, parameters));
+            return new QueryResult(-1, SqlServerRpc.ExecuteQuery(session, ParameterizedQuery(parameters), parameters));
         }
         int parallelism = _parallelReads ?? session.Settings.ParallelReads;
 
         // Helper sessions cannot see this session's uncommitted work, so stay serial inside a transaction.
         if (parallelism > 1 && _partitionColumn != null && session.TransactionDescriptor == 0)
         {
-            return new QueryResult(-1, SqlServerParallelQueryStream.Start(_connection, sql, _partitionColumn, parallelism, _partitionCount));
+            return new QueryResult(-1, SqlServerParallelQueryStream.Start(_connection, Query(nested: true), _partitionColumn, parallelism, _partitionCount));
         }
-        return new QueryResult(-1, _connection.ExecuteQueryStream(sql));
+        return new QueryResult(-1, _connection.ExecuteQueryStream(Query()));
+    }
+
+    /// <summary>The SQL query to run with bound parameters; a Substrait plan has none.</summary>
+    private string ParameterizedQuery(IArrowArrayStream parameters)
+    {
+        if (_sqlQuery == null && _substraitPlan != null)
+        {
+            parameters.Dispose();
+            throw AdbcException.NotImplemented("Bound parameters are not supported with a Substrait plan");
+        }
+        return Query();
     }
 
     /// <summary>
@@ -164,7 +234,7 @@ public sealed class SqlServerStatement : AdbcStatement
             _incrementalPending = null;
             return new PartitionedResult(schema, -1, []);
         }
-        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        string sql = Query(nested: true);
         _connection.EnsureIdle();
         if (_boundStream != null)
         {
@@ -201,12 +271,11 @@ public sealed class SqlServerStatement : AdbcStatement
             }
         }
 
-        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
         if (TakeBoundStream() is IArrowArrayStream parameters)
         {
-            return new UpdateResult(SqlServerRpc.ExecuteUpdate(_connection.Session, sql, parameters));
+            return new UpdateResult(SqlServerRpc.ExecuteUpdate(_connection.Session, ParameterizedQuery(parameters), parameters));
         }
-        return new UpdateResult(_connection.Session.ExecuteNonQuery(sql));
+        return new UpdateResult(_connection.Session.ExecuteNonQuery(Query()));
     }
 
     /// <summary>Hands over the bound data; each Bind or BindStream is used by one execution.</summary>
@@ -219,11 +288,12 @@ public sealed class SqlServerStatement : AdbcStatement
 
     /// <summary>
     /// Nothing to do ahead of execution: sp_executesql already caches the
-    /// plan of a parameterized statement. Only checks that there is a query.
+    /// plan of a parameterized statement. Only checks that there is a query,
+    /// and that a Substrait plan translates.
     /// </summary>
     public override void Prepare()
     {
-        _ = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        _ = Query();
     }
 
     /// <summary>
@@ -233,12 +303,17 @@ public sealed class SqlServerStatement : AdbcStatement
     /// </summary>
     public override Schema ExecuteSchema()
     {
-        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        string sql = Query();
+        if (_sqlQuery == null && _boundStream != null)
+        {
+            throw AdbcException.NotImplemented("Bound parameters are not supported with a Substrait plan");
+        }
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
+        // A Substrait plan has no parameters to declare.
         string declarations = _boundStream != null
             ? SqlServerRpc.Declarations(_boundStream.Schema, session.DefaultCollation)
-            : Declarations(DescribeParameters(session, sql));
+            : _sqlQuery == null ? "" : Declarations(DescribeParameters(session, sql));
         return SqlServerPartitions.DescribeResult(session, sql, declarations);
     }
 
@@ -249,7 +324,12 @@ public sealed class SqlServerStatement : AdbcStatement
     /// </summary>
     public override Schema GetParameterSchema()
     {
-        string sql = SqlQuery ?? throw new AdbcException("SqlQuery must be set", AdbcStatusCode.InvalidState);
+        string sql = Query();
+        if (_sqlQuery == null)
+        {
+            // Substrait plans have no parameters.
+            return new Schema([], null);
+        }
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
         List<(string Name, string Type)> parameters = DescribeParameters(session, sql);

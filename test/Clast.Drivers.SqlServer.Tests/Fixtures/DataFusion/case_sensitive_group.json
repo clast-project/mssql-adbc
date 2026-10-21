@@ -1,0 +1,194 @@
+{
+ "extensions": [
+  {
+   "extensionFunction": {
+    "name": "count",
+    "extensionUrnReference": 4294967295
+   }
+  }
+ ],
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "sort": {
+      "input": {
+       "project": {
+        "common": {
+         "emit": {
+          "outputMapping": [
+           2,
+           3
+          ]
+         }
+        },
+        "input": {
+         "aggregate": {
+          "input": {
+           "read": {
+            "baseSchema": {
+             "names": [
+              "id",
+              "customer_id",
+              "name",
+              "price",
+              "qty",
+              "ts",
+              "flag",
+              "amount",
+              "d"
+             ],
+             "struct": {
+              "types": [
+               {
+                "i64": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "i64": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "string": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "fp64": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "i32": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "precisionTimestamp": {
+                 "precision": 6,
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "bool": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "decimal": {
+                 "scale": 2,
+                 "precision": 10,
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               },
+               {
+                "date": {
+                 "nullability": "NULLABILITY_NULLABLE"
+                }
+               }
+              ],
+              "nullability": "NULLABILITY_REQUIRED"
+             }
+            },
+            "projection": {
+             "select": {
+              "structItems": [
+               {
+                "field": 2
+               }
+              ]
+             }
+            },
+            "namedTable": {
+             "names": [
+              "orders"
+             ]
+            }
+           }
+          },
+          "groupings": [
+           {
+            "expressionReferences": [
+             0
+            ]
+           }
+          ],
+          "measures": [
+           {
+            "measure": {
+             "invocation": "AGGREGATION_INVOCATION_ALL",
+             "arguments": [
+              {
+               "value": {
+                "literal": {
+                 "i64": "1"
+                }
+               }
+              }
+             ]
+            }
+           }
+          ],
+          "groupingExpressions": [
+           {
+            "selection": {
+             "directReference": {
+              "structField": {}
+             },
+             "rootReference": {}
+            }
+           }
+          ]
+         }
+        },
+        "expressions": [
+         {
+          "selection": {
+           "directReference": {
+            "structField": {}
+           },
+           "rootReference": {}
+          }
+         },
+         {
+          "selection": {
+           "directReference": {
+            "structField": {
+             "field": 1
+            }
+           },
+           "rootReference": {}
+          }
+         }
+        ]
+       }
+      },
+      "sorts": [
+       {
+        "expr": {
+         "selection": {
+          "directReference": {
+           "structField": {}
+          },
+          "rootReference": {}
+         }
+        },
+        "direction": "SORT_DIRECTION_ASC_NULLS_LAST"
+       }
+      ]
+     }
+    },
+    "names": [
+     "name",
+     "n"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

@@ -1,0 +1,3 @@
+SELECT [t0].[id] AS [id]
+FROM [orders] AS [t0]
+WHERE ((([t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 = N'a' COLLATE Latin1_General_100_BIN2_UTF8) OR ([t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 = N'b' COLLATE Latin1_General_100_BIN2_UTF8)) OR ((([t0].[id] = CAST(1 AS bigint)) OR ([t0].[id] = CAST(2 AS bigint))) OR ([t0].[id] = CAST(3 AS bigint))))

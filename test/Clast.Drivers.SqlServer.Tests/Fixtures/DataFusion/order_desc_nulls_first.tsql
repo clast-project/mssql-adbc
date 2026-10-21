@@ -1,0 +1,3 @@
+SELECT [t0].[id] AS [id], [t0].[qty] AS [qty]
+FROM [orders] AS [t0]
+ORDER BY CASE WHEN [t0].[qty] IS NULL THEN 0 ELSE 1 END, [t0].[qty] DESC, CASE WHEN [t0].[id] IS NULL THEN 1 ELSE 0 END, [t0].[id]

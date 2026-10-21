@@ -1,0 +1,1 @@
+SELECT id, qty FROM orders ORDER BY qty DESC NULLS FIRST, id

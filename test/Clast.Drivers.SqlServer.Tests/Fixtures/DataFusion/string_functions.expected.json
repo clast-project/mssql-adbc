@@ -1,0 +1,65 @@
+{
+ "ordered": false,
+ "columns": [
+  "u",
+  "l",
+  "s",
+  "r"
+ ],
+ "rows": [
+  [
+   "APPLE",
+   "apple",
+   "ppl",
+   "bpple"
+  ],
+  [
+   "BANANA",
+   "banana",
+   "ana",
+   "bbnbnb"
+  ],
+  [
+   "AVOCADO",
+   "avocado",
+   "voc",
+   "Avocbdo"
+  ],
+  [
+   "CHERRY",
+   "cherry",
+   "her",
+   "cherry"
+  ],
+  [
+   "APRICOT",
+   "apricot",
+   "pri",
+   "bpricot"
+  ],
+  [
+   "DATE",
+   "date",
+   "ate",
+   "dbte"
+  ],
+  [
+   "A.B",
+   "a.b",
+   ".b",
+   "b.b"
+  ],
+  [
+   null,
+   null,
+   null,
+   null
+  ],
+  [
+   "APPLE",
+   "apple",
+   "ppl",
+   "Apple"
+  ]
+ ]
+}

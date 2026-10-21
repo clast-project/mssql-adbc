@@ -1,0 +1,1 @@
+SELECT CAST(qty AS BIGINT) AS q, CAST(price AS VARCHAR) AS p FROM orders

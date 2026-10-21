@@ -1,0 +1,3 @@
+SELECT [t0].[id] AS [id]
+FROM [orders] AS [t0]
+ORDER BY CASE WHEN ([t0].[price] * CAST([t0].[qty] AS float)) IS NULL THEN 0 ELSE 1 END, ([t0].[price] * CAST([t0].[qty] AS float)) DESC, CASE WHEN [t0].[id] IS NULL THEN 1 ELSE 0 END, [t0].[id]

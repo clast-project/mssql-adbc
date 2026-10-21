@@ -1,0 +1,1 @@
+ERROR: Unsupported Substrait function 'character_length' has no T-SQL translation. The driver's Substrait dialect (SqlServerSubstrait.DialectYaml) lists the supported functions.

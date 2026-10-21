@@ -1,0 +1,1 @@
+SELECT id FROM orders WHERE qty > 5 UNION ALL SELECT id FROM customers UNION ALL SELECT 99

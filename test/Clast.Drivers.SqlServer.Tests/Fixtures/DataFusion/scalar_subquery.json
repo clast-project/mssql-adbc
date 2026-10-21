@@ -1,0 +1,280 @@
+{
+ "extensions": [
+  {
+   "extensionFunction": {
+    "functionAnchor": 1,
+    "name": "subtract",
+    "extensionUrnReference": 4294967295
+   }
+  },
+  {
+   "extensionFunction": {
+    "name": "avg",
+    "extensionUrnReference": 4294967295
+   }
+  }
+ ],
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "project": {
+      "common": {
+       "emit": {
+        "outputMapping": [
+         2,
+         3
+        ]
+       }
+      },
+      "input": {
+       "read": {
+        "baseSchema": {
+         "names": [
+          "id",
+          "customer_id",
+          "name",
+          "price",
+          "qty",
+          "ts",
+          "flag",
+          "amount",
+          "d"
+         ],
+         "struct": {
+          "types": [
+           {
+            "i64": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "i64": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "string": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "fp64": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "i32": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "precisionTimestamp": {
+             "precision": 6,
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "bool": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "decimal": {
+             "scale": 2,
+             "precision": 10,
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           },
+           {
+            "date": {
+             "nullability": "NULLABILITY_NULLABLE"
+            }
+           }
+          ],
+          "nullability": "NULLABILITY_REQUIRED"
+         }
+        },
+        "projection": {
+         "select": {
+          "structItems": [
+           {},
+           {
+            "field": 3
+           }
+          ]
+         }
+        },
+        "namedTable": {
+         "names": [
+          "orders"
+         ]
+        }
+       }
+      },
+      "expressions": [
+       {
+        "selection": {
+         "directReference": {
+          "structField": {}
+         },
+         "rootReference": {}
+        }
+       },
+       {
+        "scalarFunction": {
+         "functionReference": 1,
+         "outputType": {
+          "fp64": {
+           "nullability": "NULLABILITY_NULLABLE"
+          }
+         },
+         "arguments": [
+          {
+           "value": {
+            "selection": {
+             "directReference": {
+              "structField": {
+               "field": 1
+              }
+             },
+             "rootReference": {}
+            }
+           }
+          },
+          {
+           "value": {
+            "subquery": {
+             "scalar": {
+              "input": {
+               "aggregate": {
+                "input": {
+                 "read": {
+                  "baseSchema": {
+                   "names": [
+                    "id",
+                    "customer_id",
+                    "name",
+                    "price",
+                    "qty",
+                    "ts",
+                    "flag",
+                    "amount",
+                    "d"
+                   ],
+                   "struct": {
+                    "types": [
+                     {
+                      "i64": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "i64": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "string": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "fp64": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "i32": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "precisionTimestamp": {
+                       "precision": 6,
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "bool": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "decimal": {
+                       "scale": 2,
+                       "precision": 10,
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     },
+                     {
+                      "date": {
+                       "nullability": "NULLABILITY_NULLABLE"
+                      }
+                     }
+                    ],
+                    "nullability": "NULLABILITY_REQUIRED"
+                   }
+                  },
+                  "projection": {
+                   "select": {
+                    "structItems": [
+                     {
+                      "field": 3
+                     }
+                    ]
+                   }
+                  },
+                  "namedTable": {
+                   "names": [
+                    "orders"
+                   ]
+                  }
+                 }
+                },
+                "groupings": [
+                 {}
+                ],
+                "measures": [
+                 {
+                  "measure": {
+                   "invocation": "AGGREGATION_INVOCATION_ALL",
+                   "arguments": [
+                    {
+                     "value": {
+                      "selection": {
+                       "directReference": {
+                        "structField": {}
+                       },
+                       "rootReference": {}
+                      }
+                     }
+                    }
+                   ]
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      ]
+     }
+    },
+    "names": [
+     "id",
+     "diff"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

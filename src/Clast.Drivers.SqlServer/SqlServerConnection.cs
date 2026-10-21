@@ -269,6 +269,10 @@ public sealed class SqlServerConnection : AdbcConnection
             EntraInfo info = _session.ConnectSettings.DiscoverEntra();
             return key == SqlServerParameters.EntraAuthority ? info.Authority : info.Audience;
         }
+        if (key == SqlServerParameters.SubstraitDialect)
+        {
+            return Substrait.SqlServerSubstrait.DialectYaml;
+        }
         if (key == SqlServerParameters.EngineEdition)
         {
             EnsureIdle();

@@ -30,6 +30,8 @@ internal static class SqlServerMetadata
         AdbcInfoCode.VendorVersion,
         AdbcInfoCode.VendorSql,
         AdbcInfoCode.VendorSubstrait,
+        AdbcInfoCode.VendorSubstraitMinVersion,
+        AdbcInfoCode.VendorSubstraitMaxVersion,
         AdbcInfoCode.DriverName,
         AdbcInfoCode.DriverVersion,
         AdbcInfoCode.DriverArrowVersion,
@@ -82,7 +84,12 @@ internal static class SqlServerMetadata
                     AddBool(code, true);
                     break;
                 case AdbcInfoCode.VendorSubstrait:
-                    AddBool(code, false);
+                    AddBool(code, true);
+                    break;
+                case AdbcInfoCode.VendorSubstraitMinVersion:
+                case AdbcInfoCode.VendorSubstraitMaxVersion:
+                    // Plans follow Substrait 0.107; older producers' legacy fields are accepted too.
+                    AddString(code, Substrait.SqlServerSubstrait.SubstraitVersion);
                     break;
                 case AdbcInfoCode.DriverName:
                     AddString(code, DriverName);

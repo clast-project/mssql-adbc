@@ -1,0 +1,193 @@
+{
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "aggregate": {
+      "input": {
+       "set": {
+        "inputs": [
+         {
+          "read": {
+           "baseSchema": {
+            "names": [
+             "id",
+             "customer_id",
+             "name",
+             "price",
+             "qty",
+             "ts",
+             "flag",
+             "amount",
+             "d"
+            ],
+            "struct": {
+             "types": [
+              {
+               "i64": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "i64": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "string": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "fp64": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "i32": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "precisionTimestamp": {
+                "precision": 6,
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "bool": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "decimal": {
+                "scale": 2,
+                "precision": 10,
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              {
+               "date": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              }
+             ],
+             "nullability": "NULLABILITY_REQUIRED"
+            }
+           },
+           "projection": {
+            "select": {
+             "structItems": [
+              {
+               "field": 2
+              }
+             ]
+            }
+           },
+           "namedTable": {
+            "names": [
+             "orders"
+            ]
+           }
+          }
+         },
+         {
+          "project": {
+           "common": {
+            "emit": {
+             "outputMapping": [
+              1
+             ]
+            }
+           },
+           "input": {
+            "read": {
+             "baseSchema": {
+              "names": [
+               "id",
+               "cname",
+               "region"
+              ],
+              "struct": {
+               "types": [
+                {
+                 "i64": {
+                  "nullability": "NULLABILITY_NULLABLE"
+                 }
+                },
+                {
+                 "string": {
+                  "nullability": "NULLABILITY_NULLABLE"
+                 }
+                },
+                {
+                 "string": {
+                  "nullability": "NULLABILITY_NULLABLE"
+                 }
+                }
+               ],
+               "nullability": "NULLABILITY_REQUIRED"
+              }
+             },
+             "projection": {
+              "select": {
+               "structItems": [
+                {
+                 "field": 1
+                }
+               ]
+              }
+             },
+             "namedTable": {
+              "names": [
+               "customers"
+              ]
+             }
+            }
+           },
+           "expressions": [
+            {
+             "selection": {
+              "directReference": {
+               "structField": {}
+              },
+              "rootReference": {}
+             }
+            }
+           ]
+          }
+         }
+        ],
+        "op": "SET_OP_UNION_ALL"
+       }
+      },
+      "groupings": [
+       {
+        "expressionReferences": [
+         0
+        ]
+       }
+      ],
+      "groupingExpressions": [
+       {
+        "selection": {
+         "directReference": {
+          "structField": {}
+         },
+         "rootReference": {}
+        }
+       }
+      ]
+     }
+    },
+    "names": [
+     "name"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

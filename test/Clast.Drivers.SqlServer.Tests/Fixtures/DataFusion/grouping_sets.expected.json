@@ -1,0 +1,60 @@
+{
+ "ordered": false,
+ "columns": [
+  "customer_id",
+  "parity",
+  "n"
+ ],
+ "rows": [
+  [
+   null,
+   null,
+   1
+  ],
+  [
+   10,
+   null,
+   2
+  ],
+  [
+   null,
+   null,
+   2
+  ],
+  [
+   20,
+   null,
+   2
+  ],
+  [
+   null,
+   0,
+   2
+  ],
+  [
+   null,
+   1,
+   5
+  ],
+  [
+   30,
+   null,
+   2
+  ],
+  [
+   null,
+   -1,
+   1
+  ],
+  [
+   null,
+   null,
+   9
+  ],
+  [
+   40,
+   null,
+   1
+  ]
+ ]
+}

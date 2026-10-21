@@ -1,0 +1,1 @@
+SELECT id FROM orders WHERE customer_id IS NOT DISTINCT FROM NULL

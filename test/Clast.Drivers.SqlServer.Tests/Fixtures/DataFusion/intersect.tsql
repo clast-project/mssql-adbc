@@ -1,0 +1,7 @@
+SELECT [t2].[customer_id] AS [customer_id]
+FROM (
+SELECT [t0].[customer_id] AS [customer_id]
+FROM [orders] AS [t0]
+GROUP BY [t0].[customer_id]
+) AS [t2]
+WHERE (EXISTS (SELECT 1 FROM [customers] AS [t1] WHERE ([t2].[customer_id] IS NOT DISTINCT FROM [t1].[id])))

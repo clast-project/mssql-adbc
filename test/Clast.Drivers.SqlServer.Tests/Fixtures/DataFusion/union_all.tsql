@@ -1,0 +1,8 @@
+SELECT [t2].[name] AS [name]
+FROM (
+SELECT [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 AS [name]
+FROM [orders] AS [t0]
+UNION ALL
+SELECT [t1].[cname] COLLATE Latin1_General_100_BIN2_UTF8 AS [name]
+FROM [customers] AS [t1]
+) AS [t2]

@@ -1,0 +1,20 @@
+{
+ "ordered": false,
+ "columns": [
+  "customer_id"
+ ],
+ "rows": [
+  [
+   10
+  ],
+  [
+   30
+  ],
+  [
+   20
+  ],
+  [
+   null
+  ]
+ ]
+}

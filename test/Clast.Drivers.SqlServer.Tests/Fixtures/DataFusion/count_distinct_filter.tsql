@@ -1,0 +1,2 @@
+SELECT COUNT_BIG(DISTINCT CASE WHEN ([t0].[qty] > 0) THEN [t0].[customer_id] END) AS [n]
+FROM [orders] AS [t0]

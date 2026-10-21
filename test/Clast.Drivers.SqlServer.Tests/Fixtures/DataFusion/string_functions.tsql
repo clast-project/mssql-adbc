@@ -1,0 +1,1 @@
+ERROR: Unsupported Substrait function 'substring:str_i64_i64' has no T-SQL translation. The driver's Substrait dialect (SqlServerSubstrait.DialectYaml) lists the supported functions.

@@ -1,0 +1,21 @@
+{
+ "ordered": true,
+ "columns": [
+  "name",
+  "total"
+ ],
+ "rows": [
+  [
+   "a.b",
+   100.0
+  ],
+  [
+   "apple",
+   3.0
+  ],
+  [
+   "cherry",
+   2.25
+  ]
+ ]
+}

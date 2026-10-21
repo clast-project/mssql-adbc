@@ -1,0 +1,270 @@
+{
+ "extensions": [
+  {
+   "extensionFunction": {
+    "name": "equal",
+    "extensionUrnReference": 4294967295
+   }
+  }
+ ],
+ "relations": [
+  {
+   "root": {
+    "input": {
+     "project": {
+      "common": {
+       "emit": {
+        "outputMapping": [
+         2
+        ]
+       }
+      },
+      "input": {
+       "join": {
+        "left": {
+         "read": {
+          "baseSchema": {
+           "names": [
+            "id",
+            "customer_id",
+            "name",
+            "price",
+            "qty",
+            "ts",
+            "flag",
+            "amount",
+            "d"
+           ],
+           "struct": {
+            "types": [
+             {
+              "i64": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "i64": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "string": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "fp64": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "i32": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "precisionTimestamp": {
+               "precision": 6,
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "bool": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "decimal": {
+               "scale": 2,
+               "precision": 10,
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             },
+             {
+              "date": {
+               "nullability": "NULLABILITY_NULLABLE"
+              }
+             }
+            ],
+            "nullability": "NULLABILITY_REQUIRED"
+           }
+          },
+          "projection": {
+           "select": {
+            "structItems": [
+             {},
+             {
+              "field": 1
+             }
+            ]
+           }
+          },
+          "namedTable": {
+           "names": [
+            "orders"
+           ]
+          }
+         }
+        },
+        "right": {
+         "project": {
+          "common": {
+           "emit": {
+            "outputMapping": [
+             2
+            ]
+           }
+          },
+          "input": {
+           "filter": {
+            "input": {
+             "read": {
+              "baseSchema": {
+               "names": [
+                "id",
+                "cname",
+                "region"
+               ],
+               "struct": {
+                "types": [
+                 {
+                  "i64": {
+                   "nullability": "NULLABILITY_NULLABLE"
+                  }
+                 },
+                 {
+                  "string": {
+                   "nullability": "NULLABILITY_NULLABLE"
+                  }
+                 },
+                 {
+                  "string": {
+                   "nullability": "NULLABILITY_NULLABLE"
+                  }
+                 }
+                ],
+                "nullability": "NULLABILITY_REQUIRED"
+               }
+              },
+              "projection": {
+               "select": {
+                "structItems": [
+                 {},
+                 {
+                  "field": 2
+                 }
+                ]
+               }
+              },
+              "namedTable": {
+               "names": [
+                "customers"
+               ]
+              }
+             }
+            },
+            "condition": {
+             "scalarFunction": {
+              "outputType": {
+               "bool": {
+                "nullability": "NULLABILITY_NULLABLE"
+               }
+              },
+              "arguments": [
+               {
+                "value": {
+                 "selection": {
+                  "directReference": {
+                   "structField": {
+                    "field": 1
+                   }
+                  },
+                  "rootReference": {}
+                 }
+                }
+               },
+               {
+                "value": {
+                 "literal": {
+                  "string": "r"
+                 }
+                }
+               }
+              ]
+             }
+            }
+           }
+          },
+          "expressions": [
+           {
+            "selection": {
+             "directReference": {
+              "structField": {}
+             },
+             "rootReference": {}
+            }
+           }
+          ]
+         }
+        },
+        "expression": {
+         "scalarFunction": {
+          "outputType": {
+           "bool": {
+            "nullability": "NULLABILITY_NULLABLE"
+           }
+          },
+          "arguments": [
+           {
+            "value": {
+             "selection": {
+              "directReference": {
+               "structField": {
+                "field": 1
+               }
+              },
+              "rootReference": {}
+             }
+            }
+           },
+           {
+            "value": {
+             "selection": {
+              "directReference": {
+               "structField": {
+                "field": 2
+               }
+              },
+              "rootReference": {}
+             }
+            }
+           }
+          ]
+         }
+        },
+        "type": "JOIN_TYPE_LEFT_SEMI"
+       }
+      },
+      "expressions": [
+       {
+        "selection": {
+         "directReference": {
+          "structField": {}
+         },
+         "rootReference": {}
+        }
+       }
+      ]
+     }
+    },
+    "names": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "version": {
+  "minorNumber": 85,
+  "producer": "datafusion"
+ }
+}

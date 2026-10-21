@@ -32,6 +32,10 @@ public sealed class SqlServerDatabase : AdbcDatabase
     /// </summary>
     public override string GetOption(string key)
     {
+        if (key == SqlServerParameters.SubstraitDialect)
+        {
+            return Substrait.SqlServerSubstrait.DialectYaml;
+        }
         if (key is SqlServerParameters.EntraAuthority or SqlServerParameters.EntraAudience)
         {
             _discoverySettings ??= SqlServerConnectionSettings.Parse(_options, requireCredentials: false);
