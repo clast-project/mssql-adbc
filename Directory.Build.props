@@ -15,18 +15,6 @@
   </PropertyGroup>
 
   <!--
-    Location of the Apache Arrow ADBC C# sources: the external/arrow-adbc
-    submodule (clone with recurse-submodules, or run "git submodule update
-    init"). To be replaced by a package reference once an ADBC release has
-    the APIs used here. Override with -p:AdbcCSharpRoot=... to build against
-    another checkout.
-  -->
-  <PropertyGroup>
-    <AdbcCSharpRoot Condition="'$(AdbcCSharpRoot)' == ''">$(MSBuildThisFileDirectory)external\arrow-adbc\csharp</AdbcCSharpRoot>
-    <AdbcProject>$(AdbcCSharpRoot)\src\Apache.Arrow.Adbc\Apache.Arrow.Adbc.csproj</AdbcProject>
-  </PropertyGroup>
-
-  <!--
     Strong naming, shared with the other clast-project repositories so every
     Clast.* assembly carries public key token 0b0eddb1936076d9. The key is
     committed deliberately: a strong name provides identity, not security.

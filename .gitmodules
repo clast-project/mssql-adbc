@@ -1,4 +1,0 @@
-[submodule "external/arrow-adbc"]
-	path = external/arrow-adbc
-	url = https://github.com/apache/arrow-adbc.git
-	shallow = true

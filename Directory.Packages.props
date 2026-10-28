@@ -6,8 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Keep in step with the ADBC checkout's Directory.Packages.props. -->
     <PackageVersion Include="Apache.Arrow" Version="23.0.0" />
+    <PackageVersion Include="Apache.Arrow.Adbc" Version="1.0.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <!-- Baseline for benchmarks and the correctness oracle for tests only. -->
     <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.1" />

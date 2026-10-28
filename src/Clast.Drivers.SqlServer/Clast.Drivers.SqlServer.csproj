@@ -22,7 +22,7 @@
 
   <ItemGroup>
     <PackageReference Include="Apache.Arrow" />
-    <ProjectReference Include="$(AdbcProject)" />
+    <PackageReference Include="Apache.Arrow.Adbc" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">

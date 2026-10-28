@@ -28,8 +28,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
@@ -56,8 +54,6 @@ jobs:
           - 1433:1433
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
@@ -123,8 +119,6 @@ jobs:
             rid: osx-arm64
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
@@ -158,8 +152,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-        with:
-          submodules: true
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
