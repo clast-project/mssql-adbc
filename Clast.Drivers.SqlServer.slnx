@@ -10,7 +10,4 @@
     <Project Path="test/Clast.Drivers.SqlServer.Tests/Clast.Drivers.SqlServer.Tests.csproj" />
     <Project Path="test/Clast.Drivers.SqlServer.Native.Tests/Clast.Drivers.SqlServer.Native.Tests.csproj" />
   </Folder>
-  <Folder Name="/external/">
-    <Project Path="external/arrow-adbc/csharp/src/Apache.Arrow.Adbc/Apache.Arrow.Adbc.csproj" />
-  </Folder>
 </Solution>

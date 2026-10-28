@@ -73,8 +73,8 @@ create_append; create modes derive `CREATE TABLE` from the Arrow schema.
 - Namespace `Clast.Drivers.SqlServer`; Apache-2.0; Clast strong-name key.
 - Option prefix `adbc.mssql.*` (renamable later); `username`/`password` use the
   standard ADBC keys.
-- ADBC C# referenced from a local checkout via `AdbcCSharpRoot` in
-  `Directory.Build.props`; expected to become a submodule.
+- ADBC C# referenced as the `Apache.Arrow.Adbc` NuGet package (1.0, the first
+  release with ADBC 1.1).
 - net10.0 first, plus netstandard2.0 for .NET Framework and other hosts. The
   netstandard2.0 build fills in what it lacks (`Compat/`: 128-bit integers,
   span overloads of Stream and Encoding, UTF-8 transcoding, and other newer
