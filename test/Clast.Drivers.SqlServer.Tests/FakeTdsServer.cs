@@ -103,7 +103,13 @@ internal sealed class FakeTdsServer : IDisposable
     }
 
     /// <summary>A failed login: an ERROR token with <paramref name="number"/>, then DONE with the error bit.</summary>
-    public static byte[] LoginError(int number, string message = "Login failed")
+    public static byte[] LoginError(int number, string message = "Login failed") => ErrorResponse((number, message));
+
+    /// <summary>An ERROR token for each of <paramref name="errors"/>, then DONE with the error bit.</summary>
+    public static byte[] ErrorResponse(params (int Number, string Message)[] errors) =>
+        [.. errors.SelectMany(e => ErrorToken(e.Number, e.Message)), 0xFD, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    private static byte[] ErrorToken(int number, string message)
     {
         byte[] text = Encoding.Unicode.GetBytes(message);
         byte[] server = Encoding.Unicode.GetBytes("fake");
@@ -122,7 +128,7 @@ internal sealed class FakeTdsServer : IDisposable
         at += server.Length;
         token[at++] = 0; // procedure name
         BinaryPrimitives.WriteInt32LittleEndian(token.AsSpan(at), 1);
-        return [.. token, 0xFD, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        return token;
     }
 
     public static byte[] FedAuthInfo(string stsUrl, string spn)

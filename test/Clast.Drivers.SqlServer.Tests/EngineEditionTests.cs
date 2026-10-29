@@ -158,6 +158,51 @@ public sealed class EngineEditionTests
                 EngineEdition.Enterprise));
     }
 
+    private static FakeTdsServer DescribeFails(params (int Number, string Message)[] errors) =>
+        new((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Done()])
+        {
+            Batch = sql =>
+                sql.Contains("sp_describe_first_result_set", StringComparison.Ordinal) ? FakeTdsServer.ErrorResponse(errors)
+                : sql.Contains("sp_describe_undeclared_parameters", StringComparison.Ordinal) ? FakeTdsServer.EmptyResult()
+                : sql.Contains("SET FMTONLY ON; SELECT 1;", StringComparison.Ordinal) ? FakeTdsServer.IntResult(1)
+                : FakeTdsServer.Done(),
+        };
+
+    [Theory]
+    [InlineData(2812, "Could not find stored procedure 'sys.sp_describe_first_result_set'.")]
+    [InlineData(15871, "PROCEDURE 'sp_describe_first_result_set' is not supported.")]
+    public void ExecuteSchemaFallsBackToFormatOnlyWithoutDescribeFirstResultSet(int number, string message)
+    {
+        using FakeTdsServer server = DescribeFails((number, message));
+        using AdbcConnection connection = Connect(server);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "SELECT 1";
+        Assert.IsType<Int32Type>(Assert.Single(statement.ExecuteSchema().FieldsList).DataType);
+        Assert.IsType<Int32Type>(Assert.Single(statement.ExecuteSchema().FieldsList).DataType);
+        Assert.Single(server.Batches, b => b.Contains("sp_describe_first_result_set", StringComparison.Ordinal));
+        Assert.False(((SqlServerConnection)connection).Session.DescribesFirstResultSet);
+    }
+
+    /// <summary>
+    /// The same errors from inside the described batch come with 11529 after
+    /// them: they are the query's, so the query must not be run under FMTONLY.
+    /// </summary>
+    [Theory]
+    [InlineData(2812, "Could not find stored procedure 'nope'.")]
+    [InlineData(15871, "PROCEDURE 'sp_who' is not supported.")]
+    public void ExecuteSchemaDoesNotFallBackOnAnErrorInTheBatch(int number, string message)
+    {
+        using FakeTdsServer server = DescribeFails((number, message),
+            (11529, "The metadata could not be determined because every code path results in an error; see previous errors for some of these."));
+        using AdbcConnection connection = Connect(server);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "SELECT 1";
+        SqlServerException ex = Assert.Throws<SqlServerException>(() => statement.ExecuteSchema());
+        Assert.Equal([number, 11529], ex.Errors.Select(e => e.Number));
+        Assert.DoesNotContain(server.Batches, b => b.Contains("FMTONLY", StringComparison.Ordinal));
+        Assert.Null(((SqlServerConnection)connection).Session.DescribesFirstResultSet);
+    }
+
     [SkippableFact]
     public void TheRealServerIsSqlServer()
     {

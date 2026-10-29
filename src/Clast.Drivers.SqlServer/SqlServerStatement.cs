@@ -299,7 +299,8 @@ public sealed class SqlServerStatement : AdbcStatement
     /// <summary>
     /// The schema of the query's first result set, without running it. Bound
     /// parameters are declared with their bound types; otherwise with the
-    /// types the server infers.
+    /// types the server infers. Fails when the server can't tell the shape
+    /// (see <see cref="SqlServerPartitions.DescribeResult"/>).
     /// </summary>
     public override Schema ExecuteSchema()
     {
@@ -311,10 +312,10 @@ public sealed class SqlServerStatement : AdbcStatement
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
         // A Substrait plan has no parameters to declare.
-        string declarations = _boundStream != null
+        string parameters = _boundStream != null
             ? SqlServerRpc.Declarations(_boundStream.Schema, session.DefaultCollation)
             : _sqlQuery == null ? "" : Declarations(DescribeParameters(session, sql));
-        return SqlServerPartitions.DescribeResult(session, sql, declarations);
+        return SqlServerPartitions.DescribeResult(session, sql, parameters);
     }
 
     /// <summary>
@@ -338,7 +339,7 @@ public sealed class SqlServerStatement : AdbcStatement
             return new Schema([], null);
         }
         string columns = string.Join(", ", parameters.Select(p => $"CAST(NULL AS {p.Type}) AS {IngestTarget.Quote(p.Name.TrimStart('@'))}"));
-        return SqlServerPartitions.DescribeResult(session, "SELECT " + columns);
+        return SqlServerPartitions.FormatOnly(session, "SELECT " + columns);
     }
 
     private static List<(string Name, string Type)> DescribeParameters(TdsSession session, string sql)
@@ -350,7 +351,7 @@ public sealed class SqlServerStatement : AdbcStatement
     }
 
     private static string Declarations(List<(string Name, string Type)> parameters) =>
-        parameters.Count == 0 ? "" : "DECLARE " + string.Join(", ", parameters.Select(p => $"{p.Name} {p.Type}")) + ";\n";
+        string.Join(", ", parameters.Select(p => $"{p.Name} {p.Type}"));
 
     /// <summary>
     /// Cancels the operation in progress on the statement's connection, which

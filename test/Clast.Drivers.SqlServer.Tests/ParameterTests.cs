@@ -255,6 +255,81 @@ public sealed class ParameterTests : IDisposable
     }
 
     [SkippableFact]
+    public void ExecuteSchemaReportsNullabilityAndNativeTypes()
+    {
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = "SELECT 1, CAST(NULL AS int) AS n, CAST(N'{}' AS json) AS j, CAST('[1, 2, 3]' AS vector(3)) AS v, CAST(1.5 AS decimal(9, 2)) AS d";
+        Schema schema = statement.ExecuteSchema();
+        Assert.Equal(["", "n", "j", "v", "d"], schema.FieldsList.Select(f => f.Name));
+        Assert.False(schema.FieldsList[0].IsNullable);
+        Assert.True(schema.FieldsList[1].IsNullable);
+        Assert.IsType<JsonType>(schema.FieldsList[2].DataType);
+        Assert.Equal(3, Assert.IsType<FixedSizeListType>(schema.FieldsList[3].DataType).ListSize);
+        var decimalType = Assert.IsType<Decimal128Type>(schema.FieldsList[4].DataType);
+        Assert.Equal((9, 2), (decimalType.Precision, decimalType.Scale));
+    }
+
+    [SkippableFact]
+    public void ExecuteSchemaMatchesTheResultOfEveryType()
+    {
+        // A permanent table: sp_describe_undeclared_parameters can't see temp tables.
+        string table = "clast_types_" + Guid.NewGuid().ToString("N");
+        Execute($"""
+            CREATE TABLE dbo.[{table}] (id int NOT NULL, t text, nt ntext, i image, g geometry, gg geography, h hierarchyid, x xml,
+                v sql_variant, ts timestamp, m money, sm smallmoney, dt datetime, sdt smalldatetime, tm time(3), dto datetimeoffset(2),
+                c char(5), nc nchar(5), b binary(4), vb varbinary(max), u uniqueidentifier, j json, vec vector(3), d decimal(20, 5),
+                f float, r real, bt bit, ti tinyint)
+            """);
+        Schema described, result;
+        try
+        {
+            using AdbcStatement statement = _connection.CreateStatement();
+            statement.SqlQuery = $"SELECT * FROM dbo.[{table}]";
+            described = statement.ExecuteSchema();
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            result = stream.Schema;
+        }
+        finally
+        {
+            Execute($"DROP TABLE dbo.[{table}]");
+        }
+        static string Describe(Field f) =>
+            $"{f.Name} {f.DataType.Name} {(f.DataType as Decimal128Type)?.Scale} {(f.DataType as FixedSizeListType)?.ListSize} {f.IsNullable} {f.Metadata[Arrow.DecoderFactory.SqlTypeMetadataKey]}";
+        Assert.Equal(result.FieldsList.Select(Describe), described.FieldsList.Select(Describe));
+    }
+
+    [SkippableTheory]
+    [InlineData("IF 1 = 1 SELECT 1 AS a ELSE SELECT 'x' AS b, 2 AS c", 11509)]
+    [InlineData("DECLARE @s nvarchar(100) = N'SELECT 1 AS a'; EXEC(@s)", 11513)]
+    [InlineData("SELECT * FROM clast_no_such_table", 208)]
+    public void ExecuteSchemaFailsWhenTheShapeIsUnknown(string sql, int error)
+    {
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = sql;
+        Assert.Equal(error, Assert.Throws<SqlServerException>(() => statement.ExecuteSchema()).Number);
+
+        // The session is still usable.
+        statement.SqlQuery = "DECLARE @s nvarchar(100) = N'SELECT 1 AS a'; EXEC(@s) WITH RESULT SETS ((a bigint NOT NULL))";
+        Field field = Assert.Single(statement.ExecuteSchema().FieldsList);
+        Assert.IsType<Int64Type>(field.DataType);
+        Assert.False(field.IsNullable);
+    }
+
+    [SkippableFact]
+    public void ExecuteSchemaDoesNotRunAProcedureThatTurnsFormatOnlyOff()
+    {
+        Execute("CREATE PROCEDURE #p AS BEGIN SET FMTONLY OFF; SET CONTEXT_INFO 0x01; SELECT 1 AS n; END");
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = "EXEC #p";
+        Assert.Equal("n", Assert.Single(statement.ExecuteSchema().FieldsList).Name);
+
+        statement.SqlQuery = "SELECT CAST(CASE WHEN CONTEXT_INFO() IS NULL THEN 0 ELSE 1 END AS int)";
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        using RecordBatch batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult()!;
+        Assert.Equal(0, ((Int32Array)batch.Column(0)).GetValue(0));
+    }
+
+    [SkippableFact]
     public void GetParameterSchemaDescribesParameters()
     {
         using AdbcStatement statement = _connection.CreateStatement();
