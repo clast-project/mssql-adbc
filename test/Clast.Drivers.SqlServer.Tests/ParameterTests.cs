@@ -269,6 +269,35 @@ public sealed class ParameterTests : IDisposable
         Assert.Equal((9, 2), (decimalType.Precision, decimalType.Scale));
     }
 
+    [SkippableFact]
+    public void ExecuteSchemaMatchesTheResultOfEveryType()
+    {
+        // A permanent table: sp_describe_undeclared_parameters can't see temp tables.
+        string table = "clast_types_" + Guid.NewGuid().ToString("N");
+        Execute($"""
+            CREATE TABLE dbo.[{table}] (id int NOT NULL, t text, nt ntext, i image, g geometry, gg geography, h hierarchyid, x xml,
+                v sql_variant, ts timestamp, m money, sm smallmoney, dt datetime, sdt smalldatetime, tm time(3), dto datetimeoffset(2),
+                c char(5), nc nchar(5), b binary(4), vb varbinary(max), u uniqueidentifier, j json, vec vector(3), d decimal(20, 5),
+                f float, r real, bt bit, ti tinyint)
+            """);
+        Schema described, result;
+        try
+        {
+            using AdbcStatement statement = _connection.CreateStatement();
+            statement.SqlQuery = $"SELECT * FROM dbo.[{table}]";
+            described = statement.ExecuteSchema();
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            result = stream.Schema;
+        }
+        finally
+        {
+            Execute($"DROP TABLE dbo.[{table}]");
+        }
+        static string Describe(Field f) =>
+            $"{f.Name} {f.DataType.Name} {(f.DataType as Decimal128Type)?.Scale} {(f.DataType as FixedSizeListType)?.ListSize} {f.IsNullable} {f.Metadata[Arrow.DecoderFactory.SqlTypeMetadataKey]}";
+        Assert.Equal(result.FieldsList.Select(Describe), described.FieldsList.Select(Describe));
+    }
+
     [SkippableTheory]
     [InlineData("IF 1 = 1 SELECT 1 AS a ELSE SELECT 'x' AS b, 2 AS c", 11509)]
     [InlineData("DECLARE @s nvarchar(100) = N'SELECT 1 AS a'; EXEC(@s)", 11513)]
