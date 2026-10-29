@@ -99,9 +99,67 @@ internal static class SqlServerPartitions
 
     /// <summary>
     /// Gets the schema of the query's first result set without running it.
-    /// <paramref name="declarations"/> declares any parameters it refers to.
+    /// <paramref name="parameters"/> declares any parameters it refers to, as
+    /// <c>@a int, @b nvarchar(10)</c>.
     /// </summary>
-    internal static Schema DescribeResult(TdsSession session, string sql, string declarations = "")
+    /// <remarks>
+    /// <c>sp_describe_first_result_set</c> analyzes the batch, and fails where
+    /// it can't tell the shape (a temp table in a multi-statement batch,
+    /// dynamic SQL, branches that return different shapes). SET FMTONLY would
+    /// instead return a shape that may be wrong, and runs a procedure that
+    /// turns it off for real. The Arrow types come from the TDS column
+    /// metadata, as for query results, so they are read from a SELECT of a
+    /// typed NULL per column under FMTONLY. A server without the procedure
+    /// gets FMTONLY on the query.
+    /// </remarks>
+    internal static Schema DescribeResult(TdsSession session, string sql, string parameters = "")
+    {
+        if (session.DescribesFirstResultSet != false)
+        {
+            List<object?[]> rows;
+            try
+            {
+                rows = SqlServerMetadata.Query(session,
+                    $"EXEC sys.sp_describe_first_result_set @tsql = {SqlServerMetadata.Literal(sql)}, @params = {(parameters == "" ? "NULL" : SqlServerMetadata.Literal(parameters))}")[0];
+            }
+            // Errors in the described batch come with error 11529 after them, so a lone one is about the procedure itself.
+            catch (SqlServerException ex) when (session.DescribesFirstResultSet == null && ex.Errors.Count == 1 && ex.Number is 2812 or 15871)
+            {
+                session.DescribesFirstResultSet = false;
+                return FormatOnly(session, sql, parameters == "" ? "" : $"DECLARE {parameters};\n");
+            }
+            session.DescribesFirstResultSet = true;
+            return FromDescription(session, rows);
+        }
+        return FormatOnly(session, sql, parameters == "" ? "" : $"DECLARE {parameters};\n");
+    }
+
+    /// <summary>
+    /// The schema described by the rows of <c>sp_describe_first_result_set</c>:
+    /// names and nullability from the rows, Arrow types from FMTONLY on a
+    /// SELECT of NULLs of each column's type.
+    /// </summary>
+    private static Schema FromDescription(TdsSession session, List<object?[]> rows)
+    {
+        // Columns: is_hidden, column_ordinal, name, is_nullable, system_type_id, system_type_name, ...
+        if (rows.Count == 0)
+        {
+            return new Schema([], null);
+        }
+        Schema types = FormatOnly(session, "SELECT " + string.Join(", ", rows.Select(r => $"CAST(NULL AS {(string)r[5]!})")));
+        return new Schema(rows.Select((r, i) =>
+        {
+            Field field = types.FieldsList[i];
+            return new Field((string?)r[2] ?? "", field.DataType, (bool)r[3]!, field.Metadata);
+        }), null);
+    }
+
+    /// <summary>
+    /// The schema of the batch's first result set under SET FMTONLY, which
+    /// doesn't run it. <paramref name="declarations"/> declares any parameters
+    /// it refers to.
+    /// </summary>
+    internal static Schema FormatOnly(TdsSession session, string sql, string declarations = "")
     {
         session.SendSqlBatch($"{declarations}SET FMTONLY ON; {sql}; SET FMTONLY OFF;");
         TdsColumn[]? columns = session.ReadUntilResultSet();

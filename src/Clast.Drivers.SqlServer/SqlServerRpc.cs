@@ -308,8 +308,8 @@ internal static class SqlServerRpc
     }
 
     /// <summary>
-    /// <c>DECLARE</c> for the parameters of a bound schema, so a batch can
-    /// refer to them without values (for example to describe its result).
+    /// The parameters of a bound schema with their types (<c>@a int, @b
+    /// nvarchar(10)</c>), so a batch can be described without values.
     /// </summary>
     public static string Declarations(Schema schema, byte[] collation)
     {
@@ -317,7 +317,7 @@ internal static class SqlServerRpc
         {
             return "";
         }
-        var sql = new StringBuilder("DECLARE ");
+        var sql = new StringBuilder();
         for (int i = 0; i < schema.FieldsList.Count; i++)
         {
             Field field = schema.FieldsList[i];
@@ -328,6 +328,6 @@ internal static class SqlServerRpc
             }
             sql.Append('@').Append(name).Append(' ').Append(ParameterType("@" + name, field, null, collation).SqlTypeName);
         }
-        return sql.Append(";\n").ToString();
+        return sql.ToString();
     }
 }

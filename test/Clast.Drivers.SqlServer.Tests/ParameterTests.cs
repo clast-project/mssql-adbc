@@ -255,6 +255,52 @@ public sealed class ParameterTests : IDisposable
     }
 
     [SkippableFact]
+    public void ExecuteSchemaReportsNullabilityAndNativeTypes()
+    {
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = "SELECT 1, CAST(NULL AS int) AS n, CAST(N'{}' AS json) AS j, CAST('[1, 2, 3]' AS vector(3)) AS v, CAST(1.5 AS decimal(9, 2)) AS d";
+        Schema schema = statement.ExecuteSchema();
+        Assert.Equal(["", "n", "j", "v", "d"], schema.FieldsList.Select(f => f.Name));
+        Assert.False(schema.FieldsList[0].IsNullable);
+        Assert.True(schema.FieldsList[1].IsNullable);
+        Assert.IsType<JsonType>(schema.FieldsList[2].DataType);
+        Assert.Equal(3, Assert.IsType<FixedSizeListType>(schema.FieldsList[3].DataType).ListSize);
+        var decimalType = Assert.IsType<Decimal128Type>(schema.FieldsList[4].DataType);
+        Assert.Equal((9, 2), (decimalType.Precision, decimalType.Scale));
+    }
+
+    [SkippableTheory]
+    [InlineData("IF 1 = 1 SELECT 1 AS a ELSE SELECT 'x' AS b, 2 AS c", 11509)]
+    [InlineData("DECLARE @s nvarchar(100) = N'SELECT 1 AS a'; EXEC(@s)", 11513)]
+    [InlineData("SELECT * FROM clast_no_such_table", 208)]
+    public void ExecuteSchemaFailsWhenTheShapeIsUnknown(string sql, int error)
+    {
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = sql;
+        Assert.Equal(error, Assert.Throws<SqlServerException>(() => statement.ExecuteSchema()).Number);
+
+        // The session is still usable.
+        statement.SqlQuery = "DECLARE @s nvarchar(100) = N'SELECT 1 AS a'; EXEC(@s) WITH RESULT SETS ((a bigint NOT NULL))";
+        Field field = Assert.Single(statement.ExecuteSchema().FieldsList);
+        Assert.IsType<Int64Type>(field.DataType);
+        Assert.False(field.IsNullable);
+    }
+
+    [SkippableFact]
+    public void ExecuteSchemaDoesNotRunAProcedureThatTurnsFormatOnlyOff()
+    {
+        Execute("CREATE PROCEDURE #p AS BEGIN SET FMTONLY OFF; SET CONTEXT_INFO 0x01; SELECT 1 AS n; END");
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = "EXEC #p";
+        Assert.Equal("n", Assert.Single(statement.ExecuteSchema().FieldsList).Name);
+
+        statement.SqlQuery = "SELECT CAST(CASE WHEN CONTEXT_INFO() IS NULL THEN 0 ELSE 1 END AS int)";
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        using RecordBatch batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult()!;
+        Assert.Equal(0, ((Int32Array)batch.Column(0)).GetValue(0));
+    }
+
+    [SkippableFact]
     public void GetParameterSchemaDescribesParameters()
     {
         using AdbcStatement statement = _connection.CreateStatement();

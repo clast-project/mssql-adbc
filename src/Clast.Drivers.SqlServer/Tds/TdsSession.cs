@@ -116,6 +116,9 @@ internal sealed class TdsSession : IDisposable
     /// <summary><c>SERVERPROPERTY('EngineEdition')</c>, once asked for (see <see cref="SqlServerEngine"/>).</summary>
     public int? EngineEdition { get; set; }
 
+    /// <summary>Whether the server has <c>sp_describe_first_result_set</c>, once tried (see <see cref="SqlServerPartitions.DescribeResult"/>).</summary>
+    public bool? DescribesFirstResultSet { get; set; }
+
     /// <summary>Descriptor of the open transaction, or 0 when in autocommit mode.</summary>
     public long TransactionDescriptor { get; private set; }
 
@@ -584,6 +587,7 @@ internal sealed class TdsSession : IDisposable
         TdsSession recovered = Connect(ConnectSettings, recoveringFrom: this);
         recovered.IsolationLevel = IsolationLevel;
         recovered.EngineEdition = EngineEdition;
+        recovered.DescribesFirstResultSet = DescribesFirstResultSet;
         return recovered;
     }
 

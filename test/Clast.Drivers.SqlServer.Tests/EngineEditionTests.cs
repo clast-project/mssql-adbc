@@ -158,6 +158,26 @@ public sealed class EngineEditionTests
                 EngineEdition.Enterprise));
     }
 
+    [Fact]
+    public void ExecuteSchemaFallsBackToFormatOnlyWithoutDescribeFirstResultSet()
+    {
+        using var server = new FakeTdsServer((_, _) => [.. FakeTdsServer.LoginAck(), .. FakeTdsServer.Done()])
+        {
+            Batch = sql =>
+                sql.Contains("sp_describe_first_result_set", StringComparison.Ordinal)
+                    ? FakeTdsServer.LoginError(2812, "Could not find stored procedure 'sys.sp_describe_first_result_set'.")
+                : sql.Contains("sp_describe_undeclared_parameters", StringComparison.Ordinal) ? FakeTdsServer.EmptyResult()
+                : sql.Contains("SET FMTONLY ON; SELECT 1;", StringComparison.Ordinal) ? FakeTdsServer.IntResult(1)
+                : FakeTdsServer.Done(),
+        };
+        using AdbcConnection connection = Connect(server);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "SELECT 1";
+        Assert.IsType<Int32Type>(Assert.Single(statement.ExecuteSchema().FieldsList).DataType);
+        Assert.IsType<Int32Type>(Assert.Single(statement.ExecuteSchema().FieldsList).DataType);
+        Assert.Single(server.Batches, b => b.Contains("sp_describe_first_result_set", StringComparison.Ordinal));
+    }
+
     [SkippableFact]
     public void TheRealServerIsSqlServer()
     {

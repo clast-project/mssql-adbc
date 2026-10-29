@@ -297,6 +297,12 @@ public sealed class WarehouseTests
             describe.Prepare();
             Schema parameters = describe.GetParameterSchema();
             Assert.Single(parameters.FieldsList);
+
+            // sp_describe_first_result_set: the warehouse has it, and rejects a shape it can't determine.
+            Assert.IsType<StringType>(Assert.Single(describe.ExecuteSchema().FieldsList).DataType);
+            Assert.True(((SqlServerConnection)connection).Session.DescribesFirstResultSet);
+            describe.SqlQuery = "IF 1 = 1 SELECT 1 AS a ELSE SELECT 'x' AS b, 2 AS c";
+            Assert.Equal(11509, Assert.Throws<SqlServerException>(() => describe.ExecuteSchema()).Number);
         }
         finally
         {
