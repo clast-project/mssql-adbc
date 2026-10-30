@@ -373,6 +373,14 @@ them; not on Synapse or Fabric, which have neither type.
   1M rows locally, with a consumer that spends a fixed time per row (off /
   N=1 / N=2): 2 µs/row 2.84 / 2.06 / 2.06 s (consumer-bound), 0.5 µs/row
   1.25 / 0.86 / 0.83 s, no consumer work 0.93 / 0.84 / 0.80 s (within noise).
+  On Fabric Warehouse (2026-10-30, same table and consumers, ShortRun):
+  no consumer work 30.5 / 27.8 / 33.9 s, 0.5 µs/row 31.5 / 29.9 / 33.1 s,
+  2 µs/row 32.7 / 32.0 / 32.6 s, with standard deviations of 1–6 s: no
+  measurable effect. The read is bound by the server and network, about
+  30× slower than locally, and the socket's buffering already keeps the
+  server sending while the caller works; parallel reads are the lever
+  there. Read-ahead stays off by default, since it helps only when the
+  client is the bottleneck.
 - Cancellation uses the TDS attention signal. `Cancel` on the connection or
   statement (or a cancelled token on any async call or
   `ReadNextRecordBatchAsync`) sends an attention while the response is being
