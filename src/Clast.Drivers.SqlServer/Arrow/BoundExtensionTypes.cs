@@ -27,6 +27,7 @@ internal static class BoundExtensionTypes
         TimestampWithOffsetExtensionDefinition.Instance,
         VariantExtensionDefinition.Instance,
         JsonExtensionDefinition.Instance,
+        Utf16StringExtensionDefinition.Instance,
     }.ToDictionary(d => d.ExtensionName, StringComparer.Ordinal);
 
     /// <summary>The stream, or one with its extension types restored if it has any to restore.</summary>
@@ -109,6 +110,20 @@ internal static class BoundExtensionTypes
         {
             type = JsonType.Default;
             return storageType is StringType;
+        }
+    }
+
+    /// <summary><c>clast.utf16</c> over binary, the driver's own <see cref="Utf16StringType"/>.</summary>
+    private sealed class Utf16StringExtensionDefinition : ExtensionDefinition
+    {
+        public static readonly Utf16StringExtensionDefinition Instance = new();
+
+        public override string ExtensionName => "clast.utf16";
+
+        public override bool TryCreateType(IArrowType storageType, string metadata, out ExtensionType type)
+        {
+            type = Utf16StringType.Default;
+            return storageType is BinaryType;
         }
     }
 }

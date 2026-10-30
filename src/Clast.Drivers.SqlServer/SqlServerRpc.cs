@@ -54,6 +54,8 @@ internal static class SqlServerRpc
                 TdsColumn.Create(name, TdsDataType.DecimalN, DecimalLength(d.Precision), (byte)d.Precision, (byte)d.Scale),
             // json parameters are sent as nvarchar; the server converts them where a json value is needed.
             StringType or JsonType => TdsColumn.Create(name, TdsDataType.NVarChar, MaxBytes(column) <= 4000 ? 8000 : 0xFFFF, collation: collation),
+            // Two bytes to a character, sent as they are.
+            Utf16StringType => TdsColumn.Create(name, TdsDataType.NVarChar, MaxBytes(column) <= 8000 ? 8000 : 0xFFFF, collation: collation),
             VariantType => TdsColumn.Create(name, TdsDataType.Variant, 8016),
             FixedSizeListType { ValueDataType: FloatType } v =>
                 TdsColumn.Create(name, TdsDataType.Vector, TdsColumn.VectorHeaderLength + v.ListSize * 4),

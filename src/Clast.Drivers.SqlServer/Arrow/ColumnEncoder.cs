@@ -108,7 +108,7 @@ internal static class EncoderFactory
     public static ColumnEncoder Create(TdsColumn target, Field source, int sourceIndex, byte[]? defaultCollation = null)
     {
         IArrowType type = source.DataType;
-        bool text = type is StringType or JsonType;
+        bool text = type is StringType or JsonType or Utf16StringType;
         ColumnEncoder? encoder = target.Type switch
         {
             TdsDataType.IntN when IsInteger(type) => CreateInteger(target, sourceIndex, type),
@@ -121,8 +121,8 @@ internal static class EncoderFactory
             TdsDataType.Vector when IsFloatList(type, target.VectorDimensions) => new VectorEncoder(target, sourceIndex),
             TdsDataType.Variant when type is VariantType => new VariantEncoder(target, sourceIndex, defaultCollation ?? []),
             // xml and hierarchyid targets, sent as varbinary: UTF-8 text as is, and hierarchyid's text form serialized.
-            TdsDataType.BigVarBinary when type is StringType && target.TableType == TdsDataType.Xml => new BinaryEncoder(target, sourceIndex),
-            TdsDataType.BigVarBinary when type is StringType && DecoderFactory.IsHierarchyId(target) => new HierarchyIdEncoder(target, sourceIndex),
+            TdsDataType.BigVarBinary when type is StringType or Utf16StringType && target.TableType == TdsDataType.Xml => new BinaryEncoder(target, sourceIndex),
+            TdsDataType.BigVarBinary when type is StringType or Utf16StringType && DecoderFactory.IsHierarchyId(target) => new HierarchyIdEncoder(target, sourceIndex),
             TdsDataType.BigVarBinary or TdsDataType.BigBinary when type is BinaryType => new BinaryEncoder(target, sourceIndex),
             TdsDataType.Guid when type is GuidType || type is FixedSizeBinaryType { ByteWidth: 16 } => new GuidEncoder(target, sourceIndex),
             TdsDataType.DateN when type is Date32Type or Date64Type || type is TimestampType => new TemporalEncoder(target, sourceIndex, type),
@@ -371,12 +371,17 @@ internal sealed unsafe class DecimalEncoder : ColumnEncoder
     }
 }
 
-/// <summary>utf8 into nvarchar/nchar (UTF-16) or varchar/char (UTF-8 collations pass through; others use the code page).</summary>
+/// <summary>
+/// utf8 or clast.utf16 into nvarchar/nchar (UTF-16) or varchar/char (UTF-8
+/// collations as UTF-8; others in the code page). Each source passes through
+/// to the target of its own encoding.
+/// </summary>
 internal sealed unsafe class StringEncoder : ColumnEncoder
 {
     private readonly bool _plp;
     private readonly bool _utf16;
     private readonly Encoding? _codePage;
+    private bool _sourceUtf16;
     private int* _offsets;
     private byte* _data;
     private char[] _chars = new char[256];
@@ -400,7 +405,13 @@ internal sealed unsafe class StringEncoder : ColumnEncoder
 
     public override void Bind(IArrowArray array)
     {
-        StringArray strings = array is JsonArray json ? json.StorageArray : (StringArray)array;
+        BinaryArray strings = array switch
+        {
+            JsonArray json => json.StorageArray,
+            Utf16StringArray utf16 => utf16.StorageArray,
+            _ => (BinaryArray)array,
+        };
+        _sourceUtf16 = array is Utf16StringArray;
         BindNulls(strings);
         _offsets = (int*)Pin(strings.Data.Buffers[1]) + strings.Offset;
         _data = Pin(strings.Data.Buffers[2]);
@@ -416,7 +427,11 @@ internal sealed unsafe class StringEncoder : ColumnEncoder
 
         int start = _offsets[row];
         var utf8 = new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start);
-        if (_utf16)
+        if (_sourceUtf16)
+        {
+            WriteUtf16(writer, utf8, row);
+        }
+        else if (_utf16)
         {
             if (!_plp)
             {
@@ -435,13 +450,48 @@ internal sealed unsafe class StringEncoder : ColumnEncoder
         }
         else
         {
-            ReadOnlySpan<char> chars = ToUtf16(utf8);
-            int count = _codePage.GetByteCount(chars);
-            if (_bytes.Length < count)
-            {
-                _bytes = new byte[Math.Max(count, _bytes.Length * 2)];
-            }
-            WriteValue(writer, _bytes.AsSpan(0, _codePage.GetBytes(chars, _bytes)), _plp);
+            WriteCodePage(writer, ToUtf16(utf8));
+        }
+    }
+
+    /// <summary>A clast.utf16 value: as is into nvarchar, else transcoded (unpaired surrogates become U+FFFD or the code page's default).</summary>
+    private void WriteUtf16(PacketWriter writer, ReadOnlySpan<byte> utf16, int row)
+    {
+        if ((utf16.Length & 1) != 0)
+        {
+            throw new AdbcException(
+                $"Value in row {row} for column '{Target.Name}' is not UTF-16: it has an odd number of bytes",
+                AdbcStatusCode.InvalidData);
+        }
+        if (_utf16)
+        {
+            WriteValue(writer, utf16, _plp);
+            return;
+        }
+        ReadOnlySpan<char> chars = MemoryMarshal.Cast<byte, char>(utf16);
+        if (_codePage != null)
+        {
+            WriteCodePage(writer, chars);
+            return;
+        }
+        // UTF-8 takes at most three bytes per UTF-16 code unit.
+        EnsureBytes(chars.Length * 3);
+        Utf8.FromUtf16(chars, _bytes, out _, out int written, replaceInvalidSequences: true);
+        WriteValue(writer, _bytes.AsSpan(0, written), _plp);
+    }
+
+    private void WriteCodePage(PacketWriter writer, ReadOnlySpan<char> chars)
+    {
+        Encoding codePage = _codePage!;
+        EnsureBytes(codePage.GetByteCount(chars));
+        WriteValue(writer, _bytes.AsSpan(0, codePage.GetBytes(chars, _bytes)), _plp);
+    }
+
+    private void EnsureBytes(int count)
+    {
+        if (_bytes.Length < count)
+        {
+            _bytes = new byte[Math.Max(count, _bytes.Length * 2)];
         }
     }
 
@@ -489,11 +539,14 @@ internal sealed unsafe class StringEncoder : ColumnEncoder
     }
 }
 
+/// <summary>Binary values, and text into xml (sent as varbinary): UTF-8 as is, clast.utf16 behind a byte order mark.</summary>
 internal sealed unsafe class BinaryEncoder : ColumnEncoder
 {
     private readonly bool _plp;
     private int* _offsets;
     private byte* _data;
+    private bool _utf16;
+    private byte[] _marked = [];
 
     public BinaryEncoder(TdsColumn target, int sourceIndex) : base(target, sourceIndex)
     {
@@ -502,6 +555,11 @@ internal sealed unsafe class BinaryEncoder : ColumnEncoder
 
     public override void Bind(IArrowArray array)
     {
+        _utf16 = array is Utf16StringArray;
+        if (array is Utf16StringArray utf16)
+        {
+            array = utf16.StorageArray;
+        }
         BindNulls(array);
         _offsets = (int*)Pin(array.Data.Buffers[1]) + array.Offset;
         _data = Pin(array.Data.Buffers[2]);
@@ -515,7 +573,20 @@ internal sealed unsafe class BinaryEncoder : ColumnEncoder
             return;
         }
         int start = _offsets[row];
-        StringEncoder.WriteValue(writer, new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start), _plp);
+        var value = new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start);
+        if (_utf16)
+        {
+            // The server reads xml bytes as UTF-8 unless they start with a UTF-16 byte order mark.
+            if (_marked.Length < value.Length + 2)
+            {
+                _marked = new byte[Math.Max(value.Length + 2, _marked.Length * 2)];
+            }
+            _marked[0] = 0xFF;
+            _marked[1] = 0xFE;
+            value.CopyTo(_marked.AsSpan(2));
+            value = _marked.AsSpan(0, value.Length + 2);
+        }
+        StringEncoder.WriteValue(writer, value, _plp);
     }
 }
 
@@ -526,6 +597,8 @@ internal sealed unsafe class HierarchyIdEncoder : ColumnEncoder
     private readonly byte[] _bytes = new byte[HierarchyId.MaxBytes];
     private int* _offsets;
     private byte* _data;
+    private bool _utf16;
+    private byte[] _text = [];
 
     public HierarchyIdEncoder(TdsColumn target, int sourceIndex) : base(target, sourceIndex)
     {
@@ -534,6 +607,11 @@ internal sealed unsafe class HierarchyIdEncoder : ColumnEncoder
 
     public override void Bind(IArrowArray array)
     {
+        _utf16 = array is Utf16StringArray;
+        if (array is Utf16StringArray utf16)
+        {
+            array = utf16.StorageArray;
+        }
         BindNulls(array);
         _offsets = (int*)Pin(array.Data.Buffers[1]) + array.Offset;
         _data = Pin(array.Data.Buffers[2]);
@@ -548,6 +626,10 @@ internal sealed unsafe class HierarchyIdEncoder : ColumnEncoder
         }
         int start = _offsets[row];
         var text = new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start);
+        if (_utf16)
+        {
+            text = Narrow(text);
+        }
         if (!HierarchyId.TryParse(text, _bytes, out int length, out string? error))
         {
             throw new AdbcException(
@@ -555,6 +637,21 @@ internal sealed unsafe class HierarchyIdEncoder : ColumnEncoder
                 AdbcStatusCode.InvalidData);
         }
         StringEncoder.WriteValue(writer, _bytes.AsSpan(0, length), _plp);
+    }
+
+    /// <summary>UTF-16 text as ASCII bytes; anything else becomes 0xFF, which doesn't parse.</summary>
+    private ReadOnlySpan<byte> Narrow(ReadOnlySpan<byte> utf16)
+    {
+        ReadOnlySpan<char> chars = MemoryMarshal.Cast<byte, char>(utf16);
+        if (_text.Length < chars.Length)
+        {
+            _text = new byte[Math.Max(chars.Length, _text.Length * 2)];
+        }
+        for (int i = 0; i < chars.Length; i++)
+        {
+            _text[i] = chars[i] < 0x80 ? (byte)chars[i] : (byte)0xFF;
+        }
+        return _text.AsSpan(0, chars.Length);
     }
 }
 
