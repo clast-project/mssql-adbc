@@ -156,7 +156,7 @@ internal static class SqlServerMetadata
         session.DrainResponse(columns);
         return new Schema(columns.Select(c =>
         {
-            using ColumnDecoder decoder = DecoderFactory.Create(c, 1, session.DefaultCollation, session.Settings.HierarchyIdText);
+            using ColumnDecoder decoder = DecoderFactory.Create(c, 1, session.DefaultCollation, session.Settings.HierarchyIdText, session.Settings.Utf16Strings);
             return DecoderFactory.CreateField(decoder);
         }), null);
     }

@@ -270,7 +270,7 @@ internal static class SqlServerRpc
                 }
                 try
                 {
-                    return new SqlServerQueryStream(session, columns, continuation: continuation);
+                    return new SqlServerQueryStream(session, columns, continuation: continuation, utf16Strings: session.Settings.Utf16Strings);
                 }
                 catch
                 {

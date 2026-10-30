@@ -156,6 +156,37 @@ public sealed class AotDriverTests
         }
     }
 
+    /// <summary>
+    /// <c>adbc.mssql.string_encoding=utf16</c> across the C ABI: the importer
+    /// doesn't know <c>clast.utf16</c>, so it sees binary with the extension
+    /// name, as a native consumer does.
+    /// </summary>
+    [SkippableFact]
+    public async Task Utf16StringsCrossTheCAbi()
+    {
+        string fixture = RequireFixture();
+        using AdbcDriver driver = CAdbcDriverImporter.Load(fixture);
+        var options = new Dictionary<string, string>(SqlServerTestConfiguration.Load().Options)
+        {
+            [SqlServerParameters.StringEncoding] = "utf16",
+        };
+        using AdbcDatabase database = driver.Open(options);
+        using AdbcConnection connection = database.Connect(null);
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "SELECT N'héllo 😀' AS s, CAST('caf' + CHAR(233) AS varchar(10)) AS v";
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        List<RecordBatch> batches = await ReadAll(stream);
+        RecordBatch batch = Assert.Single(batches);
+
+        foreach ((string name, string expected) in new[] { ("s", "héllo 😀"), ("v", "café") })
+        {
+            Assert.Equal("clast.utf16", ExtensionName(batch.Schema.GetFieldByName(name)));
+            ReadOnlySpan<byte> bytes = Assert.IsType<BinaryArray>(batch.Column(name)).GetBytes(0);
+            Assert.Equal(expected, System.Text.Encoding.Unicode.GetString(bytes.ToArray()));
+        }
+        batches.ForEach(b => b.Dispose());
+    }
+
     /// <summary>Bulk ingest and bound parameters, both handing Arrow data to the driver across the C ABI.</summary>
     [SkippableFact]
     public async Task IngestsAndBindsParametersWithARealServer()

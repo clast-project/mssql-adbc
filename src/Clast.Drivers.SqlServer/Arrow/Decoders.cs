@@ -268,6 +268,8 @@ internal sealed class VariableDecoder : ColumnDecoder
     }
 
     private readonly Encoding _encoding;
+    /// <summary>Whether text is written as UTF-16 (<see cref="Utf16StringType"/>) rather than UTF-8.</summary>
+    private readonly bool _utf16;
     private readonly System.Text.Encoding? _codePage;
     private readonly bool _plp;
     private readonly bool _text;
@@ -276,11 +278,13 @@ internal sealed class VariableDecoder : ColumnDecoder
     private ValidityBuffer _validity;
     private byte[] _scratch = [];
     private char[] _chars = [];
+    private byte[] _hierarchyIdText = [];
 
     /// <param name="hierarchyIdText">For a hierarchyid column: decode to its text form rather than keep its serialized bytes.</param>
     public VariableDecoder(TdsColumn column, IArrowType arrowType, int capacity, byte[] defaultCollation, bool hierarchyIdText = false)
         : base(column, arrowType)
     {
+        _utf16 = arrowType is Utf16StringType;
         _plp = column.LengthKind == TdsLengthKind.Plp;
         _text = column.LengthKind == TdsLengthKind.Text;
         _encoding = column.Type switch
@@ -391,11 +395,27 @@ internal sealed class VariableDecoder : ColumnDecoder
         switch (_encoding)
         {
             case Encoding.Binary:
-            case Encoding.Utf8:
                 _data.Append(bytes);
                 break;
+            case Encoding.Utf8:
+                if (_utf16)
+                {
+                    AppendUtf8AsUtf16(bytes);
+                }
+                else
+                {
+                    _data.Append(bytes);
+                }
+                break;
             case Encoding.Utf16:
-                AppendUtf16(bytes);
+                if (_utf16)
+                {
+                    _data.Append(bytes);
+                }
+                else
+                {
+                    AppendUtf16(bytes);
+                }
                 break;
             case Encoding.CodePage:
                 AppendCodePage(bytes);
@@ -410,11 +430,43 @@ internal sealed class VariableDecoder : ColumnDecoder
 
     private void AppendHierarchyId(ReadOnlySpan<byte> bytes)
     {
-        if (!HierarchyId.TryFormat(bytes, _data.GetSpan(HierarchyId.MaxTextLength(bytes.Length)), out int written))
+        int maxLength = HierarchyId.MaxTextLength(bytes.Length);
+        if (!_utf16)
         {
-            throw new TdsProtocolException($"Column '{Column.Name}' holds a value that is not a valid hierarchyid");
+            if (!HierarchyId.TryFormat(bytes, _data.GetSpan(maxLength), out int written))
+            {
+                throw InvalidHierarchyId();
+            }
+            _data.Advance(written);
+            return;
         }
-        _data.Advance(written);
+
+        // The text is ASCII: format it, then widen it.
+        if (_hierarchyIdText.Length < maxLength)
+        {
+            _hierarchyIdText = new byte[Math.Max(maxLength, _hierarchyIdText.Length * 2)];
+        }
+        if (!HierarchyId.TryFormat(bytes, _hierarchyIdText, out int length))
+        {
+            throw InvalidHierarchyId();
+        }
+        Span<char> destination = MemoryMarshal.Cast<byte, char>(_data.GetSpan(length * 2));
+        for (int i = 0; i < length; i++)
+        {
+            destination[i] = (char)_hierarchyIdText[i];
+        }
+        _data.Advance(length * 2);
+    }
+
+    private TdsProtocolException InvalidHierarchyId() =>
+        new($"Column '{Column.Name}' holds a value that is not a valid hierarchyid");
+
+    /// <summary>UTF-8 text (a UTF-8 collation's varchar) as UTF-16, which never takes more code units than the UTF-8 has bytes.</summary>
+    private void AppendUtf8AsUtf16(ReadOnlySpan<byte> bytes)
+    {
+        Span<char> destination = MemoryMarshal.Cast<byte, char>(_data.GetSpan(bytes.Length * 2));
+        Utf8.ToUtf16(bytes, destination, out _, out int written, replaceInvalidSequences: true);
+        _data.Advance(written * 2);
     }
 
     private void AppendUtf16(ReadOnlySpan<byte> bytes)
@@ -431,6 +483,12 @@ internal sealed class VariableDecoder : ColumnDecoder
 
     private void AppendCodePage(ReadOnlySpan<byte> bytes)
     {
+        if (_utf16)
+        {
+            Span<char> utf16 = MemoryMarshal.Cast<byte, char>(_data.GetSpan(_codePage!.GetMaxCharCount(bytes.Length) * 2));
+            _data.Advance(_codePage.GetChars(bytes, utf16) * 2);
+            return;
+        }
         if (Ascii.IsValid(bytes))
         {
             _data.Append(bytes);

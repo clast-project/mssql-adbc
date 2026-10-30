@@ -92,7 +92,7 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
         {
             while (!_cancel.IsCancellationRequested && _work.TryDequeue(out PartitionDescriptor descriptor))
             {
-                using IArrowArrayStream stream = SqlServerQueryStream.Execute(session, SqlServerPartitions.Decode(descriptor));
+                using IArrowArrayStream stream = SqlServerQueryStream.Execute(session, SqlServerPartitions.Decode(descriptor), session.Settings.Utf16Strings);
                 while (!_cancel.IsCancellationRequested &&
                        stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
                 {

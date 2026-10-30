@@ -36,7 +36,11 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
     /// Further executions whose first result sets continue this stream; the
     /// stream owns it.
     /// </param>
-    public SqlServerQueryStream(TdsSession session, TdsColumn[] columns, bool stopAtResultEnd = false, IQueryContinuation? continuation = null)
+    /// <param name="utf16Strings">
+    /// Return text as <see cref="Utf16StringType"/>: for results returned to
+    /// the application when it asked for that, not those the driver reads.
+    /// </param>
+    public SqlServerQueryStream(TdsSession session, TdsColumn[] columns, bool stopAtResultEnd = false, IQueryContinuation? continuation = null, bool utf16Strings = false)
     {
         _session = session;
         _stopAtResultEnd = stopAtResultEnd;
@@ -47,7 +51,7 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
         var fields = new List<Field>(columns.Length);
         for (int i = 0; i < columns.Length; i++)
         {
-            _decoders[i] = DecoderFactory.Create(columns[i], _batchRows, session.DefaultCollation, session.Settings.HierarchyIdText);
+            _decoders[i] = DecoderFactory.Create(columns[i], _batchRows, session.DefaultCollation, session.Settings.HierarchyIdText, utf16Strings);
             fields.Add(DecoderFactory.CreateField(_decoders[i]));
         }
         Schema = new Schema(fields, null);
@@ -56,7 +60,8 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
     }
 
     /// <summary>Sends a batch on <paramref name="session"/> and returns a stream over its first result set.</summary>
-    public static IArrowArrayStream Execute(TdsSession session, string sql)
+    /// <param name="utf16Strings">Return text as <see cref="Utf16StringType"/> (see the constructor).</param>
+    public static IArrowArrayStream Execute(TdsSession session, string sql, bool utf16Strings = false)
     {
         session.SendSqlBatch(sql);
 
@@ -68,7 +73,7 @@ internal sealed class SqlServerQueryStream : IArrowArrayStream
 
         try
         {
-            return new SqlServerQueryStream(session, columns);
+            return new SqlServerQueryStream(session, columns, utf16Strings: utf16Strings);
         }
         catch
         {

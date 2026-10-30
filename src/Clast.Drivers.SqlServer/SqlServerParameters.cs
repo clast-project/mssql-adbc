@@ -130,6 +130,17 @@ public static class SqlServerParameters
     /// </summary>
     public const string HierarchyId = "adbc.mssql.hierarchyid";
 
+    /// <summary>
+    /// How result columns that would be Arrow strings are returned: <c>utf8</c>
+    /// (the default), as Arrow's string type, or <c>utf16</c>, as
+    /// <see cref="Utf16StringType"/> (<c>clast.utf16</c>, little-endian UTF-16
+    /// in binary), which nvarchar data reaches without transcoding. Covers
+    /// char, varchar, nchar, nvarchar, text, ntext, xml and hierarchyid as
+    /// text; json stays <c>arrow.json</c>, whose text is UTF-8. Catalog
+    /// functions' standard schemas keep utf8.
+    /// </summary>
+    public const string StringEncoding = "adbc.mssql.string_encoding";
+
     /// <summary>Maximum number of rows per Arrow record batch.</summary>
     public const string BatchRows = "adbc.mssql.batch_rows";
 
