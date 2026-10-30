@@ -46,6 +46,8 @@ internal sealed class TdsSession : IDisposable
     private volatile bool _cancelPending;
     private volatile bool _attentionSent;
     private bool _attentionAcknowledged;
+    // Set by CancelCurrentAndNext: requests begun until ClearCancelNext fail as cancelled, unsent.
+    private bool _cancelNext;
 
     private enum RequestState
     {
@@ -968,6 +970,12 @@ internal sealed class TdsSession : IDisposable
 
         lock (_requestLock)
         {
+            if (_cancelNext)
+            {
+                // Not sent at all: the server can miss an attention that
+                // closely follows a request, and run the request to its end.
+                throw CancelledException();
+            }
             _requestState = RequestState.Sending;
             _cancelPending = false;
             _attentionSent = false;
@@ -1023,6 +1031,32 @@ internal sealed class TdsSession : IDisposable
                     SendAttention();
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Cancels the current request, as <see cref="Cancel"/> does, and makes
+    /// every request begun until <see cref="ClearCancelNext"/> fail as
+    /// cancelled without being sent: for a stream whose
+    /// background thread sends further requests (one per bound parameter row),
+    /// where a cancel that arrives between two of them would find the session
+    /// idle and do nothing.
+    /// </summary>
+    public void CancelCurrentAndNext()
+    {
+        lock (_requestLock)
+        {
+            _cancelNext = true;
+            Cancel();
+        }
+    }
+
+    /// <summary>Ends <see cref="CancelCurrentAndNext"/>, once its stream has stopped sending requests.</summary>
+    public void ClearCancelNext()
+    {
+        lock (_requestLock)
+        {
+            _cancelNext = false;
         }
     }
 

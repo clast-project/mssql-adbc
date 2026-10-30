@@ -61,20 +61,16 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
     {
         try
         {
-            while (!_cancel.IsCancellationRequested &&
+            // Wait for room before decoding, so no more than the depth is held
+            // ahead of the caller; as the only writer, the write then succeeds.
+            ChannelWriter<RecordBatch> writer = _channel.Writer;
+            while (writer.WaitToWriteAsync(_cancel.Token).AsTask().GetAwaiter().GetResult() &&
                    _inner.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
             {
-                try
-                {
-                    if (!_channel.Writer.TryWrite(batch))
-                    {
-                        _channel.Writer.WriteAsync(batch, _cancel.Token).AsTask().GetAwaiter().GetResult();
-                    }
-                }
-                catch
+                if (!writer.TryWrite(batch))
                 {
                     batch.Dispose();
-                    throw;
+                    break;
                 }
             }
         }
@@ -142,7 +138,7 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
             }
             _cancelled = true;
             _cancel.Cancel();
-            _session.Cancel();
+            _session.CancelCurrentAndNext();
         }
     }
 
@@ -163,26 +159,36 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
             _shutdown = true;
             if (!_worker.IsCompleted)
             {
-                // Stop the server sending rows that will not be read.
+                // Stop the server sending rows that will not be read, and any
+                // execution for a further parameter row the worker is about to send.
                 _cancel.Cancel();
-                _session.Cancel();
+                _session.CancelCurrentAndNext();
             }
         }
 
-        while (_channel.Reader.TryRead(out RecordBatch? batch))
+        try
         {
-            batch.Dispose();
-        }
-        _worker.Wait();
-        while (_channel.Reader.TryRead(out RecordBatch? batch))
-        {
-            batch.Dispose();
-        }
-        _cancel.Dispose();
+            while (_channel.Reader.TryRead(out RecordBatch? batch))
+            {
+                batch.Dispose();
+            }
+            _worker.Wait();
+            while (_channel.Reader.TryRead(out RecordBatch? batch))
+            {
+                batch.Dispose();
+            }
 
-        // Drains whatever the worker left unread, and leaves the session idle.
-        _inner.Dispose();
-        _connection.SetBackgroundStream(null);
+            // Drains whatever the worker left unread, and leaves the session idle.
+            _inner.Dispose();
+        }
+        finally
+        {
+            // Even if draining failed, the worker has stopped: the connection is
+            // no longer busy, and checks its session's health before the next request.
+            _session.ClearCancelNext();
+            _cancel.Dispose();
+            _connection.SetBackgroundStream(null);
+        }
     }
 }
 

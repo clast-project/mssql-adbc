@@ -349,13 +349,16 @@ them; not on Synapse or Fabric, which have neither type.
   not visible to helper sessions.
 - Read-ahead (`adbc.mssql.read_ahead=N`, 0 to 16, default 0): a serial
   stream decodes on a background thread into a bounded channel, up to N
-  batches ahead of the caller, so decoding overlaps the caller's work on the
-  previous batch. Batches stay in order; an error follows the batches decoded
-  before it, and a cancel takes effect at once. The connection stays busy
-  until the stream ends or is disposed. 1M rows locally, with a consumer that
-  spends a fixed time per row: 2 µs/row 2.82 s → 2.05 s (consumer-bound),
-  0.5 µs/row 1.15 s → 0.74–0.90 s; with no consumer work, within noise of
-  serial (0.77–0.97 s vs 0.80 s).
+  batches ahead of the caller (it waits for room before decoding the next),
+  so decoding overlaps the caller's work on the previous batch. Batches stay
+  in order; an error follows the batches decoded before it, and a cancel
+  takes effect at once. A cancel between bound-parameter executions, when no
+  request is in flight, keeps the next one from being sent: an attention
+  right behind a request can be missed by the server, which then runs it to
+  the end. The connection stays busy until the stream ends or is disposed.
+  1M rows locally, with a consumer that spends a fixed time per row (off /
+  N=1 / N=2): 2 µs/row 2.84 / 2.06 / 2.06 s (consumer-bound), 0.5 µs/row
+  1.25 / 0.86 / 0.83 s, no consumer work 0.93 / 0.84 / 0.80 s (within noise).
 - Cancellation uses the TDS attention signal. `Cancel` on the connection or
   statement (or a cancelled token on any async call or
   `ReadNextRecordBatchAsync`) sends an attention while the response is being

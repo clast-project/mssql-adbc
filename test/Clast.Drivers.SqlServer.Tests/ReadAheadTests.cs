@@ -21,12 +21,33 @@ public sealed class ReadAheadTests
 
     private static readonly TimeSpan Prompt = TimeSpan.FromSeconds(10);
 
-    private static AdbcConnection Connect(string readAhead = "2") =>
+    private static AdbcConnection Connect(string readAhead = "2", string batchRows = "1000") =>
         new SqlServerDriver().Open(new Dictionary<string, string>(SqlServerTestConfiguration.Load().Options)
         {
-            [SqlServerParameters.BatchRows] = "1000",
+            [SqlServerParameters.BatchRows] = batchRows,
             [SqlServerParameters.ReadAhead] = readAhead,
         }).Connect(null);
+
+    private static readonly Schema DSchema = new([new Field("d", Int32Type.Default, false)], null);
+
+    private static RecordBatch D(int value) => new(DSchema, [new Int32Array.Builder().Append(value).Build()], 1);
+
+    /// <summary>Bound parameters, one row per batch, made on demand; counts the reads.</summary>
+    private sealed class ParameterStream(Func<int, RecordBatch?> next) : IArrowArrayStream
+    {
+        private int _reads;
+
+        public int Reads => Volatile.Read(ref _reads);
+
+        public Schema Schema => DSchema;
+
+        public ValueTask<RecordBatch?> ReadNextRecordBatchAsync(CancellationToken cancellationToken = default) =>
+            new(next(Interlocked.Increment(ref _reads)));
+
+        public void Dispose()
+        {
+        }
+    }
 
     private static IArrowArrayStream Execute(AdbcConnection connection, string sql)
     {
@@ -106,6 +127,64 @@ public sealed class ReadAheadTests
         using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
         Assert.IsType<SqlServerReadAheadStream>(stream);
         Assert.Equal(Enumerable.Range(1, 2500).Concat(Enumerable.Range(1, 1500)), ReadNumbers(stream));
+    }
+
+    /// <summary>
+    /// No more than the depth is decoded ahead: with batches of one row, one
+    /// execution per batch, the worker asks for the next parameter row only
+    /// once the caller has taken a batch.
+    /// </summary>
+    [SkippableFact]
+    public void DecodesNoMoreThanTheDepthAhead()
+    {
+        using AdbcConnection connection = Connect("1", batchRows: "1");
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "SELECT @d AS x";
+        var parameters = new ParameterStream(n => n <= 5 ? D(n) : null);
+        statement.BindStream(parameters);
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+
+        // Wait for the worker to get as far as it should, then check it goes no further.
+        Thread.Sleep(300);
+        Assert.Equal(1, parameters.Reads);
+        Next(stream)!.Dispose();
+        Assert.True(SpinWait.SpinUntil(() => parameters.Reads >= 2, Prompt));
+        Thread.Sleep(300);
+        Assert.Equal(2, parameters.Reads);
+        Assert.Equal([2, 3, 4, 5], ReadNumbers(stream));
+    }
+
+    /// <summary>
+    /// A cancel while the worker waits for the next parameter row, with no
+    /// request in flight, still cancels the execution it then sends.
+    /// </summary>
+    [SkippableFact]
+    public void CancelBetweenParameterRowsCancelsTheNextExecution()
+    {
+        using AdbcConnection connection = Connect(batchRows: "1");
+        using var release = new ManualResetEventSlim();
+        var parameters = new ParameterStream(n =>
+        {
+            if (n == 2)
+            {
+                release.Wait();
+            }
+            return n <= 2 ? D(n - 1) : null;
+        });
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "IF @d = 0 SELECT 1 AS x ELSE BEGIN WAITFOR DELAY '00:01:00'; SELECT 2 AS x END";
+        statement.BindStream(parameters);
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        Next(stream)!.Dispose();
+        SpinWait.SpinUntil(() => parameters.Reads == 2, Prompt);
+
+        statement.Cancel();
+        _ = Task.Delay(300).ContinueWith(_ => release.Set(), TaskScheduler.Default);
+        var watch = Stopwatch.StartNew();
+        Assert.Equal(AdbcStatusCode.Cancelled, Assert.ThrowsAny<AdbcException>(() => Next(stream)).Status);
+        Assert.True(watch.Elapsed < Prompt, $"Cancellation took {watch.Elapsed}");
+        Assert.Null(Next(stream));
+        AssertUsable(connection);
     }
 
     [SkippableFact]
