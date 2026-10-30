@@ -14,13 +14,19 @@ Part of the clast-project. Status: early prototype.
 
 ## Building
 
-The driver references the `Apache.Arrow.Adbc` NuGet package (1.0, ADBC 1.1):
+The driver references the `Apache.Arrow.Adbc` NuGet package (1.0, ADBC 1.1)
+and builds Apache Arrow from the pinned
+[`arrow-dotnet`](https://github.com/apache/arrow-dotnet) submodule in
+`third_party/arrow-dotnet`, which includes the C stream record-batch disposal fix:
 
 ```
-git clone https://github.com/clast-project/mssql-adbc.git
+git clone --recurse-submodules https://github.com/clast-project/mssql-adbc.git
 cd mssql-adbc
 dotnet build -c Release
 ```
+
+For an existing checkout, run `git submodule update --init --recursive` before
+building.
 
 ## Platforms
 
