@@ -276,6 +276,16 @@ resume a TDS 7.x connection's TLS 1.2 session.
 | uniqueidentifier | `arrow.uuid` | RFC 4122 byte order |
 | sql_variant | `arrow.parquet.variant` (unshredded) | per value: tinyint/smallint → int16, int → int32, bigint → int64, real/float → float/double, bit → boolean, decimal/numeric → decimal4/8/16 by precision, smallmoney/money → decimal8/16 (scale 4), date → date, time → time (us), datetime/smalldatetime/datetime2 → timestamp_ntz (us), datetimeoffset → timestamp (us, UTC; the offset is not kept), uniqueidentifier → uuid, character types → string, binary types → binary |
 
+`adbc.mssql.string_encoding=utf16` returns what would be utf8 above (all but
+json) as `clast.utf16` instead: little-endian UTF-16 in binary, offsets in
+bytes (`Utf16StringType`). nvarchar is copied as the server sends it, with no
+transcoding, unpaired surrogates included; varchar is decoded from its code
+page, or from UTF-8, into UTF-16. It is for consumers whose strings are UTF-16
+(Analysis Services is the first). It applies to the results the application
+asks for (queries, partitions, ExecuteSchema, GetTableSchema); catalog
+functions keep their standard utf8 schemas, and the driver reads its own
+queries as utf8. Ingest and bound parameters don't take `clast.utf16` yet.
+
 Every field carries the SQL Server type in `MSSQL:type` metadata. Ingest
 into sql_variant takes variants and maps primitives back (int8/int16 →
 smallint, decimal4/8/16 → decimal(9/18/38), timestamps → datetime2(6) or

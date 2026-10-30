@@ -21,8 +21,10 @@ internal static class DecoderFactory
     public static readonly TimestampWithOffsetType TimestampWithOffset = new TimestampWithOffsetType(TimeUnit.Microsecond);
 
     /// <param name="hierarchyIdText">Whether hierarchyid columns are read as text (<c>/1/2/</c>) rather than their serialized bytes.</param>
-    public static ColumnDecoder Create(TdsColumn column, int capacity, byte[] defaultCollation, bool hierarchyIdText)
+    /// <param name="utf16Strings">Whether text is returned as <see cref="Utf16StringType"/> rather than utf8.</param>
+    public static ColumnDecoder Create(TdsColumn column, int capacity, byte[] defaultCollation, bool hierarchyIdText, bool utf16Strings = false)
     {
+        IArrowType text = utf16Strings ? Utf16StringType.Default : StringType.Default;
         switch (column.Type)
         {
             case TdsDataType.Int1:
@@ -74,13 +76,13 @@ internal static class DecoderFactory
             case TdsDataType.Xml:
             case TdsDataType.Text:
             case TdsDataType.NText:
-                return new VariableDecoder(column, StringType.Default, capacity, defaultCollation);
+                return new VariableDecoder(column, text, capacity, defaultCollation);
 
             case TdsDataType.Json:
                 return new VariableDecoder(column, JsonType.Default, capacity, defaultCollation);
 
             case TdsDataType.Udt when hierarchyIdText && IsHierarchyId(column):
-                return new VariableDecoder(column, StringType.Default, capacity, defaultCollation, hierarchyIdText: true);
+                return new VariableDecoder(column, text, capacity, defaultCollation, hierarchyIdText: true);
             case TdsDataType.BigVarBinary:
             case TdsDataType.BigBinary:
             case TdsDataType.Image:

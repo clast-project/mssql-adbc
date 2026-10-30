@@ -120,8 +120,8 @@ public sealed class SqlServerConnection : AdbcConnection
         return ExecuteQueryStream(SqlServerPartitions.Decode(partition));
     }
 
-    /// <summary>Sends a batch and returns a stream over its first result set.</summary>
-    internal IArrowArrayStream ExecuteQueryStream(string sql) => SqlServerQueryStream.Execute(_session, sql);
+    /// <summary>Sends a batch and returns a stream over its first result set, for the application.</summary>
+    internal IArrowArrayStream ExecuteQueryStream(string sql) => SqlServerQueryStream.Execute(_session, sql, _session.Settings.Utf16Strings);
 
     /// <summary>
     /// Returns <paramref name="count"/> idle helper sessions logged in with
@@ -479,7 +479,7 @@ public sealed class SqlServerConnection : AdbcConnection
     /// <summary>Runs a query and returns the first column of its first row.</summary>
     private object? QueryScalar(string sql)
     {
-        using IArrowArrayStream stream = ExecuteQueryStream(sql);
+        using IArrowArrayStream stream = SqlServerQueryStream.Execute(_session, sql);
         object? value = null;
         while (stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
         {

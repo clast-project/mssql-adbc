@@ -126,12 +126,12 @@ internal static class SqlServerPartitions
             catch (SqlServerException ex) when (session.DescribesFirstResultSet == null && ex.Errors.Count == 1 && ex.Number is 2812 or 15871)
             {
                 session.DescribesFirstResultSet = false;
-                return FormatOnly(session, sql, parameters == "" ? "" : $"DECLARE {parameters};\n");
+                return FormatOnly(session, sql, parameters == "" ? "" : $"DECLARE {parameters};\n", session.Settings.Utf16Strings);
             }
             session.DescribesFirstResultSet = true;
             return FromDescription(session, rows);
         }
-        return FormatOnly(session, sql, parameters == "" ? "" : $"DECLARE {parameters};\n");
+        return FormatOnly(session, sql, parameters == "" ? "" : $"DECLARE {parameters};\n", session.Settings.Utf16Strings);
     }
 
     /// <summary>
@@ -146,7 +146,7 @@ internal static class SqlServerPartitions
         {
             return new Schema([], null);
         }
-        Schema types = FormatOnly(session, "SELECT " + string.Join(", ", rows.Select(r => $"CAST(NULL AS {(string)r[5]!})")));
+        Schema types = FormatOnly(session, "SELECT " + string.Join(", ", rows.Select(r => $"CAST(NULL AS {(string)r[5]!})")), "", session.Settings.Utf16Strings);
         return new Schema(rows.Select((r, i) =>
         {
             Field field = types.FieldsList[i];
@@ -157,9 +157,10 @@ internal static class SqlServerPartitions
     /// <summary>
     /// The schema of the batch's first result set under SET FMTONLY, which
     /// doesn't run it. <paramref name="declarations"/> declares any parameters
-    /// it refers to.
+    /// it refers to; <paramref name="utf16Strings"/> describes text as
+    /// <see cref="Utf16StringType"/>.
     /// </summary>
-    internal static Schema FormatOnly(TdsSession session, string sql, string declarations = "")
+    internal static Schema FormatOnly(TdsSession session, string sql, string declarations = "", bool utf16Strings = false)
     {
         session.SendSqlBatch($"{declarations}SET FMTONLY ON; {sql}; SET FMTONLY OFF;");
         TdsColumn[]? columns = session.ReadUntilResultSet();
@@ -170,7 +171,7 @@ internal static class SqlServerPartitions
         session.DrainResponse(columns);
         return new Schema(columns.Select(c =>
         {
-            using ColumnDecoder decoder = DecoderFactory.Create(c, 1, session.DefaultCollation, session.Settings.HierarchyIdText);
+            using ColumnDecoder decoder = DecoderFactory.Create(c, 1, session.DefaultCollation, session.Settings.HierarchyIdText, utf16Strings);
             return DecoderFactory.CreateField(decoder);
         }), null);
     }

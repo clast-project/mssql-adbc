@@ -69,6 +69,8 @@ internal sealed class SqlServerConnectionSettings
     public int BatchRows { get; private set; } = 65536;
     /// <summary>Whether hierarchyid columns are read as text (<c>/1/2/</c>); otherwise as their serialized bytes.</summary>
     public bool HierarchyIdText { get; private set; } = true;
+    /// <summary>Whether result strings are returned as <see cref="Utf16StringType"/> rather than utf8.</summary>
+    public bool Utf16Strings { get; private set; }
     public int ParallelReads { get; private set; } = 1;
     public string? ServerSpn { get; private set; }
 
@@ -183,6 +185,15 @@ internal sealed class SqlServerConnectionSettings
                 "text" => true,
                 "binary" => false,
                 _ => throw InvalidOption(SqlServerParameters.HierarchyId, hierarchyId),
+            };
+        }
+        if (options.TryGetValue(SqlServerParameters.StringEncoding, out string? stringEncoding))
+        {
+            settings.Utf16Strings = stringEncoding.ToLowerInvariant() switch
+            {
+                "utf8" => false,
+                "utf16" => true,
+                _ => throw InvalidOption(SqlServerParameters.StringEncoding, stringEncoding),
             };
         }
 
