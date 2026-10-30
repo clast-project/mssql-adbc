@@ -33,16 +33,21 @@ public sealed class ReadAheadTests
     private static RecordBatch D(int value) => new(DSchema, [new Int32Array.Builder().Append(value).Build()], 1);
 
     /// <summary>Bound parameters, one row per batch, made on demand; counts the reads.</summary>
-    private sealed class ParameterStream(Func<int, RecordBatch?> next) : IArrowArrayStream
+    private sealed class ParameterStream(Func<int, CancellationToken, RecordBatch?> next) : IArrowArrayStream
     {
         private int _reads;
+
+        public ParameterStream(Func<int, RecordBatch?> next)
+            : this((n, _) => next(n))
+        {
+        }
 
         public int Reads => Volatile.Read(ref _reads);
 
         public Schema Schema => DSchema;
 
         public ValueTask<RecordBatch?> ReadNextRecordBatchAsync(CancellationToken cancellationToken = default) =>
-            new(next(Interlocked.Increment(ref _reads)));
+            new(next(Interlocked.Increment(ref _reads), cancellationToken));
 
         public void Dispose()
         {
@@ -184,6 +189,70 @@ public sealed class ReadAheadTests
         Assert.Equal(AdbcStatusCode.Cancelled, Assert.ThrowsAny<AdbcException>(() => Next(stream)).Status);
         Assert.True(watch.Elapsed < Prompt, $"Cancellation took {watch.Elapsed}");
         Assert.Null(Next(stream));
+        AssertUsable(connection);
+    }
+
+    /// <summary>
+    /// A worker waiting for the next parameter row, in a read that honours
+    /// its token, is stopped by Dispose rather than waited for.
+    /// </summary>
+    [SkippableFact]
+    public void DisposeStopsAReadOfTheParameterRows()
+    {
+        using AdbcConnection connection = Connect(batchRows: "1");
+        var parameters = new ParameterStream((n, token) =>
+        {
+            if (n == 2)
+            {
+                token.WaitHandle.WaitOne();
+                token.ThrowIfCancellationRequested();
+            }
+            return n <= 2 ? D(n) : null;
+        });
+        var watch = Stopwatch.StartNew();
+        using (AdbcStatement statement = connection.CreateStatement())
+        {
+            statement.SqlQuery = "SELECT @d AS x";
+            statement.BindStream(parameters);
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            Next(stream)!.Dispose();
+            Assert.True(SpinWait.SpinUntil(() => parameters.Reads == 2, Prompt));
+        }
+        Assert.True(watch.Elapsed < Prompt, $"Dispose took {watch.Elapsed}");
+        AssertUsable(connection);
+    }
+
+    /// <summary>
+    /// Before ExecuteQuery returns, executions for rows without a result set
+    /// run one after another; a cancel between them still stops the next.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("0")]
+    [InlineData("2")]
+    public void CancelBeforeTheFirstResultSetCancelsTheNextExecution(string readAhead)
+    {
+        using AdbcConnection connection = Connect(readAhead);
+        using var release = new ManualResetEventSlim();
+        var parameters = new ParameterStream(n =>
+        {
+            if (n == 2)
+            {
+                release.Wait();
+            }
+            return n <= 2 ? D(n - 1) : null;
+        });
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "IF @d = 0 SET NOCOUNT ON ELSE BEGIN WAITFOR DELAY '00:01:00'; SELECT 2 AS x END";
+        statement.BindStream(parameters);
+        _ = Task.Run(() =>
+        {
+            SpinWait.SpinUntil(() => parameters.Reads == 2, Prompt);
+            statement.Cancel();
+            release.Set();
+        });
+        var watch = Stopwatch.StartNew();
+        Assert.Equal(AdbcStatusCode.Cancelled, Assert.ThrowsAny<AdbcException>(() => statement.ExecuteQuery()).Status);
+        Assert.True(watch.Elapsed < Prompt, $"Cancellation took {watch.Elapsed}");
         AssertUsable(connection);
     }
 

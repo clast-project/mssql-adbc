@@ -138,7 +138,7 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
             }
             _cancelled = true;
             _cancel.Cancel();
-            _session.CancelCurrentAndNext();
+            _session.Cancel();
         }
     }
 
@@ -159,10 +159,11 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
             _shutdown = true;
             if (!_worker.IsCompleted)
             {
-                // Stop the server sending rows that will not be read, and any
-                // execution for a further parameter row the worker is about to send.
+                // Stop the server sending rows that will not be read. For bound
+                // parameters, the session's operation also keeps the worker from
+                // sending another row's execution, and stops a read of the rows.
                 _cancel.Cancel();
-                _session.CancelCurrentAndNext();
+                _session.Cancel();
             }
         }
 
@@ -178,14 +179,14 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
                 batch.Dispose();
             }
 
-            // Drains whatever the worker left unread, and leaves the session idle.
+            // Drains whatever the worker left unread, ends any operation for
+            // bound parameters, and leaves the session idle.
             _inner.Dispose();
         }
         finally
         {
             // Even if draining failed, the worker has stopped: the connection is
             // no longer busy, and checks its session's health before the next request.
-            _session.ClearCancelNext();
             _cancel.Dispose();
             _connection.SetBackgroundStream(null);
         }

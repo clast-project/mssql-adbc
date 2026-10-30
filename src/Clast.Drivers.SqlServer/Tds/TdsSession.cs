@@ -46,7 +46,9 @@ internal sealed class TdsSession : IDisposable
     private volatile bool _cancelPending;
     private volatile bool _attentionSent;
     private bool _attentionAcknowledged;
-    // Set by CancelCurrentAndNext: requests begun until ClearCancelNext fail as cancelled, unsent.
+    // The operation in progress (BeginOperation), and whether it was cancelled:
+    // then requests begun until EndOperation fail as cancelled, unsent.
+    private CancellationTokenSource? _operation;
     private bool _cancelNext;
 
     private enum RequestState
@@ -1017,11 +1019,19 @@ internal sealed class TdsSession : IDisposable
     /// the request is being sent, the attention follows it; while the response
     /// is being read, it is sent at once. The reader then stops at the
     /// server's acknowledgment and throws <see cref="AdbcStatusCode.Cancelled"/>.
+    /// During an operation (<see cref="BeginOperation"/>), it also cancels
+    /// the requests the operation has yet to send, and its token.
     /// </summary>
     public void Cancel()
     {
+        CancellationTokenSource? operation;
         lock (_requestLock)
         {
+            operation = _operation;
+            if (operation != null)
+            {
+                _cancelNext = true;
+            }
             switch (_requestState)
             {
                 case RequestState.Sending:
@@ -1032,31 +1042,42 @@ internal sealed class TdsSession : IDisposable
                     break;
             }
         }
+        // Outside the lock: the token's callbacks are the caller's code.
+        operation?.Cancel();
     }
 
     /// <summary>
-    /// Cancels the current request, as <see cref="Cancel"/> does, and makes
-    /// every request begun until <see cref="ClearCancelNext"/> fail as
-    /// cancelled without being sent: for a stream whose
-    /// background thread sends further requests (one per bound parameter row),
-    /// where a cancel that arrives between two of them would find the session
-    /// idle and do nothing.
+    /// Starts an operation of several requests, one per bound parameter row.
+    /// Between two of them the session is idle, where a plain cancel would do
+    /// nothing; until <see cref="EndOperation"/>, <see cref="Cancel"/> instead
+    /// makes every request begun afterwards fail as cancelled without being
+    /// sent, and cancels the returned token, for reading the bound rows.
     /// </summary>
-    public void CancelCurrentAndNext()
+    public CancellationToken BeginOperation()
     {
         lock (_requestLock)
         {
-            _cancelNext = true;
-            Cancel();
+            _operation = new CancellationTokenSource();
+            _cancelNext = false;
+            return _operation.Token;
         }
     }
 
-    /// <summary>Ends <see cref="CancelCurrentAndNext"/>, once its stream has stopped sending requests.</summary>
-    public void ClearCancelNext()
+    /// <summary>
+    /// Ends the operation whose token <see cref="BeginOperation"/> returned,
+    /// if it is still the current one; later requests are cancelled only as
+    /// they run.
+    /// </summary>
+    public void EndOperation(CancellationToken operation)
     {
         lock (_requestLock)
         {
-            _cancelNext = false;
+            if (_operation != null && _operation.Token == operation)
+            {
+                // Not disposed: a Cancel racing with this may still be cancelling it.
+                _operation = null;
+                _cancelNext = false;
+            }
         }
     }
 
