@@ -73,6 +73,11 @@ public sealed class ConnectRetryTests
         Assert.Single(server.Logins);
     }
 
+    /// <summary>
+    /// A retry interval longer than the time left gives up at once. Waiting
+    /// would take the interval (60 s) or the rest of the timeout (30 s); the
+    /// bound sits well between those and a connect on a busy CI runner.
+    /// </summary>
     [Fact]
     public void DoesNotRetryPastTheConnectTimeout()
     {
@@ -80,11 +85,11 @@ public sealed class ConnectRetryTests
         var watch = Stopwatch.StartNew();
         ConnectFails(Options(server, o =>
         {
-            o[SqlServerParameters.ConnectTimeout] = "5";
-            o[SqlServerParameters.ConnectRetryInterval] = "10";
+            o[SqlServerParameters.ConnectTimeout] = "30";
+            o[SqlServerParameters.ConnectRetryInterval] = "60";
         }));
         Assert.Single(server.Logins);
-        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(4), $"Failed after {watch.Elapsed}");
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"Failed after {watch.Elapsed}");
     }
 
     [Fact]
