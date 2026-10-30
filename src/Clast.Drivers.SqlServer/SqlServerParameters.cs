@@ -86,6 +86,15 @@ public static class SqlServerParameters
     public const string ParallelReads = "adbc.mssql.parallel_reads";
 
     /// <summary>
+    /// Number of record batches (0 to 16; default 0) a result stream decodes
+    /// ahead of the caller, on a background thread, so that reading the next
+    /// batch overlaps the caller's work on the last. Each costs a batch's
+    /// memory. Parallel reads always read ahead. Settable on the database,
+    /// connection or statement.
+    /// </summary>
+    public const string ReadAhead = "adbc.mssql.read_ahead";
+
+    /// <summary>
     /// Service principal name for integrated authentication, such as
     /// <c>MSSQLSvc/host.example.com:1433</c>. Defaults to one built from the
     /// server's DNS name.

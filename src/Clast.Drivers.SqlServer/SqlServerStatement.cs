@@ -34,6 +34,7 @@ public sealed class SqlServerStatement : AdbcStatement
     /// <summary>Incremental execution: the schema of partitions already returned, with the empty set still to return.</summary>
     private Schema? _incrementalPending;
     private int? _parallelReads;
+    private int? _readAhead;
 
     internal SqlServerStatement(SqlServerConnection connection)
     {
@@ -125,6 +126,9 @@ public sealed class SqlServerStatement : AdbcStatement
             case SqlServerParameters.ParallelReads:
                 _parallelReads = SqlServerConnectionSettings.ParseParallelReads(value);
                 break;
+            case SqlServerParameters.ReadAhead:
+                _readAhead = SqlServerConnectionSettings.ParseReadAhead(value);
+                break;
             case AdbcOptions.Statement.Incremental:
                 _incremental = ParseBool(key, value);
                 _incrementalPending = null;
@@ -156,6 +160,7 @@ public sealed class SqlServerStatement : AdbcStatement
         SqlServerParameters.PartitionColumn => _partitionColumn,
         SqlServerParameters.PartitionCount => SqlServerParameters.Format(_partitionCount),
         SqlServerParameters.ParallelReads => SqlServerParameters.Format(_parallelReads ?? _connection.Session.Settings.ParallelReads),
+        SqlServerParameters.ReadAhead => SqlServerParameters.Format(_readAhead ?? _connection.Session.Settings.ReadAhead),
         SqlServerParameters.SubstraitCollation => _substraitCollation,
         SqlServerParameters.SubstraitSql => _substraitPlan == null ? null : Query(),
         _ => null,
@@ -194,18 +199,20 @@ public sealed class SqlServerStatement : AdbcStatement
     {
         _connection.EnsureIdle();
         TdsSession session = _connection.Session;
+        int readAhead = _readAhead ?? session.Settings.ReadAhead;
         if (TakeBoundStream() is IArrowArrayStream parameters)
         {
-            return new QueryResult(-1, SqlServerRpc.ExecuteQuery(session, ParameterizedQuery(parameters), parameters));
+            return new QueryResult(-1, SqlServerReadAheadStream.Start(_connection, session,
+                SqlServerRpc.ExecuteQuery(session, ParameterizedQuery(parameters), parameters), readAhead));
         }
         int parallelism = _parallelReads ?? session.Settings.ParallelReads;
 
         // Helper sessions cannot see this session's uncommitted work, so stay serial inside a transaction.
         if (parallelism > 1 && _partitionColumn != null && session.TransactionDescriptor == 0)
         {
-            return new QueryResult(-1, SqlServerParallelQueryStream.Start(_connection, Query(nested: true), _partitionColumn, parallelism, _partitionCount));
+            return new QueryResult(-1, SqlServerParallelQueryStream.Start(_connection, Query(nested: true), _partitionColumn, parallelism, _partitionCount, readAhead));
         }
-        return new QueryResult(-1, _connection.ExecuteQueryStream(Query()));
+        return new QueryResult(-1, _connection.ExecuteQueryStream(Query(), readAhead));
     }
 
     /// <summary>The SQL query to run with bound parameters; a Substrait plan has none.</summary>
