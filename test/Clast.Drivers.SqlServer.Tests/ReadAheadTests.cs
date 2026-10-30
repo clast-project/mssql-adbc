@@ -223,6 +223,88 @@ public sealed class ReadAheadTests
     }
 
     /// <summary>
+    /// The bound stream's cancellation callbacks run without the read-ahead
+    /// stream's lock held, so one may wait on another thread that cancels or
+    /// disposes the stream.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ACancellationCallbackOfTheParameterRowsMayUseTheStream(bool cancel)
+    {
+        using AdbcConnection connection = Connect(batchRows: "1");
+        SqlServerReadAheadStream? stream = null;
+        var parameters = new ParameterStream((n, token) =>
+        {
+            if (n == 2)
+            {
+                // Not disposed here: that would wait for the callback, which waits for the worker.
+                token.Register(() => OnAnotherThread(() => { if (cancel) stream!.Dispose(); else stream!.Cancel(); }));
+                token.WaitHandle.WaitOne();
+                token.ThrowIfCancellationRequested();
+            }
+            return n <= 2 ? D(n) : null;
+        });
+        using (AdbcStatement statement = connection.CreateStatement())
+        {
+            statement.SqlQuery = "SELECT @d AS x";
+            statement.BindStream(parameters);
+            stream = (SqlServerReadAheadStream)statement.ExecuteQuery().Stream!;
+            Next(stream)!.Dispose();
+            Assert.True(SpinWait.SpinUntil(() => parameters.Reads == 2, Prompt));
+            Assert.True(Task.Run(() => { if (cancel) stream.Cancel(); else stream.Dispose(); }).Wait(Prompt), "Deadlocked");
+            stream.Dispose();
+        }
+        AssertUsable(connection);
+    }
+
+    /// <summary>Runs <paramref name="action"/> on a new thread and waits for it; a task could run inline on this one.</summary>
+    private static void OnAnotherThread(Action action)
+    {
+        var thread = new Thread(() => action());
+        thread.Start();
+        thread.Join();
+    }
+
+    /// <summary>
+    /// ExecuteUpdate reads the bound rows while sending a message; a cancel
+    /// there aborts the message, part of which the server has already
+    /// received, and leaves the connection usable.
+    /// </summary>
+    [SkippableFact]
+    public void CancelWhileAnUpdateReadsTheRowsAbortsTheMessage()
+    {
+        using AdbcConnection connection = Connect("0");
+        // Enough rows that several packets of the message are sent before the next batch is read.
+        var first = new Int32Array.Builder();
+        for (int i = 0; i < 500; i++)
+        {
+            first.Append(i);
+        }
+        var parameters = new ParameterStream((n, token) =>
+        {
+            if (n == 2)
+            {
+                token.WaitHandle.WaitOne();
+                token.ThrowIfCancellationRequested();
+            }
+            return n == 1 ? new RecordBatch(DSchema, [first.Build()], 500) : null;
+        });
+        using AdbcStatement statement = connection.CreateStatement();
+        statement.SqlQuery = "DECLARE @x int = @d";
+        statement.BindStream(parameters);
+        _ = Task.Run(() =>
+        {
+            SpinWait.SpinUntil(() => parameters.Reads == 2, Prompt);
+            statement.Cancel();
+        });
+        var watch = Stopwatch.StartNew();
+        Assert.Equal(AdbcStatusCode.Cancelled, Assert.ThrowsAny<AdbcException>(() => statement.ExecuteUpdate()).Status);
+        Assert.True(watch.Elapsed < Prompt, $"Cancellation took {watch.Elapsed}");
+        AssertUsable(connection);
+    }
+
+    /// <summary>
     /// Before ExecuteQuery returns, executions for rows without a result set
     /// run one after another; a cancel between them still stops the next.
     /// </summary>

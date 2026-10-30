@@ -257,20 +257,30 @@ internal static class SqlServerRpc
         while (more)
         {
             session.BeginRequest(PacketType.Rpc);
-            session.WriteAllHeaders();
-            int count = 0;
-            long start = session.Writer.BytesWritten;
-            do
+            try
             {
-                if (count > 0)
+                session.WriteAllHeaders();
+                int count = 0;
+                long start = session.Writer.BytesWritten;
+                do
                 {
-                    session.Writer.WriteByte(BatchSeparator);
+                    if (count > 0)
+                    {
+                        session.Writer.WriteByte(BatchSeparator);
+                    }
+                    WriteCall(session, sql, rows.Current, rows.Row);
+                    count++;
+                    // Reads the bound stream mid-message: a failure or cancel there aborts the message.
+                    more = rows.MoveNext();
                 }
-                WriteCall(session, sql, rows.Current, rows.Row);
-                count++;
-                more = rows.MoveNext();
+                while (more && count < RowsPerMessage && session.Writer.BytesWritten - start < BytesPerMessage && !session.IsCancelRequested);
             }
-            while (more && count < RowsPerMessage && session.Writer.BytesWritten - start < BytesPerMessage && !session.IsCancelRequested);
+            catch (Exception)
+            {
+                // Part of the message may already be sent; the server is told to ignore it.
+                session.AbortRequest();
+                throw;
+            }
             session.EndRequest();
 
             long reported = session.DrainResponse();
@@ -328,8 +338,16 @@ internal static class SqlServerRpc
                 return false;
             }
             session.BeginRequest(PacketType.Rpc);
-            session.WriteAllHeaders();
-            WriteCall(session, sql, rows.Current, rows.Row);
+            try
+            {
+                session.WriteAllHeaders();
+                WriteCall(session, sql, rows.Current, rows.Row);
+            }
+            catch (Exception)
+            {
+                session.AbortRequest();
+                throw;
+            }
             session.EndRequest();
             return true;
         }

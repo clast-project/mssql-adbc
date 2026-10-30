@@ -130,6 +130,7 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
     /// <summary>Cancels the query; the reader then throws <see cref="Apache.Arrow.Adbc.AdbcStatusCode.Cancelled"/>.</summary>
     public void Cancel()
     {
+        CancellationTokenSource? operation;
         lock (_sync)
         {
             if (_shutdown)
@@ -138,8 +139,10 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
             }
             _cancelled = true;
             _cancel.Cancel();
-            _session.Cancel();
+            operation = _session.CancelRequests();
         }
+        // Outside the lock: the bound stream's callbacks may dispose this stream.
+        operation?.Cancel();
     }
 
     public void Dispose()
@@ -150,6 +153,7 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
 
     private void Shutdown()
     {
+        CancellationTokenSource? operation = null;
         lock (_sync)
         {
             if (_shutdown)
@@ -163,12 +167,14 @@ internal sealed class SqlServerReadAheadStream : IArrowArrayStream, IBackgroundS
                 // parameters, the session's operation also keeps the worker from
                 // sending another row's execution, and stops a read of the rows.
                 _cancel.Cancel();
-                _session.Cancel();
+                operation = _session.CancelRequests();
             }
         }
 
         try
         {
+            // Outside the lock: the bound stream's callbacks may call back into this stream.
+            operation?.Cancel();
             while (_channel.Reader.TryRead(out RecordBatch? batch))
             {
                 batch.Dispose();

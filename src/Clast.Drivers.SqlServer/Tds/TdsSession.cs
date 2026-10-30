@@ -1015,6 +1015,24 @@ internal sealed class TdsSession : IDisposable
     }
 
     /// <summary>
+    /// Discards the request message being sent, after a failure while writing
+    /// it: ends it with the IGNORE bit, so the server ignores what was sent,
+    /// and reads the reply. A cancel meanwhile is not reported, so the caller
+    /// can report the original failure.
+    /// </summary>
+    public void AbortRequest()
+    {
+        EndRequest(abort: true);
+        try
+        {
+            DrainResponse();
+        }
+        catch (AdbcException ex) when (ex.Status == AdbcStatusCode.Cancelled)
+        {
+        }
+    }
+
+    /// <summary>
     /// Cancels the current request, if any; safe to call on any thread. While
     /// the request is being sent, the attention follows it; while the response
     /// is being read, it is sent at once. The reader then stops at the
@@ -1022,7 +1040,15 @@ internal sealed class TdsSession : IDisposable
     /// During an operation (<see cref="BeginOperation"/>), it also cancels
     /// the requests the operation has yet to send, and its token.
     /// </summary>
-    public void Cancel()
+    public void Cancel() => CancelRequests()?.Cancel();
+
+    /// <summary>
+    /// <see cref="Cancel"/>, except that the operation's token source, if any,
+    /// is returned for the caller to cancel rather than cancelled: its
+    /// callbacks are the bound stream's code, so the caller cancels it once
+    /// it holds no locks of its own. Cancelling it late is harmless.
+    /// </summary>
+    public CancellationTokenSource? CancelRequests()
     {
         CancellationTokenSource? operation;
         lock (_requestLock)
@@ -1042,8 +1068,8 @@ internal sealed class TdsSession : IDisposable
                     break;
             }
         }
-        // Outside the lock: the token's callbacks are the caller's code.
-        operation?.Cancel();
+        // Cancelled outside the lock: the token's callbacks are the caller's code.
+        return operation;
     }
 
     /// <summary>
