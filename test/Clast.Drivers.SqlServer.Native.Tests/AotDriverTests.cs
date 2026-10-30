@@ -237,6 +237,85 @@ public sealed class AotDriverTests
         }
     }
 
+    /// <summary>
+    /// <c>adbc.mssql.read_ahead</c> across the C ABI: results decoded on a
+    /// background thread, in order, for a query and for bound parameters, and
+    /// a cancel partway that leaves the connection usable.
+    /// </summary>
+    [SkippableFact]
+    public async Task ReadsAheadWithARealServer()
+    {
+        string fixture = RequireFixture();
+        using AdbcDriver driver = CAdbcDriverImporter.Load(fixture);
+        var options = new Dictionary<string, string>(SqlServerTestConfiguration.Load().Options)
+        {
+            [SqlServerParameters.ReadAhead] = "2",
+            [SqlServerParameters.BatchRows] = "1000",
+        };
+        using AdbcDatabase database = driver.Open(options);
+        using AdbcConnection connection = database.Connect(null);
+
+        static List<int> Numbers(List<RecordBatch> batches) =>
+            batches.SelectMany(b => Enumerable.Range(0, b.Length).Select(i => ((Int32Array)b.Column(0)).GetValue(i)!.Value)).ToList();
+
+        using (AdbcStatement statement = connection.CreateStatement())
+        {
+            statement.SqlQuery = "SELECT TOP (10000) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS int) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b ORDER BY n";
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            List<RecordBatch> batches = await ReadAll(stream);
+            Assert.True(batches.Count > 1);
+            Assert.Equal(Enumerable.Range(1, 10_000), Numbers(batches));
+            batches.ForEach(b => b.Dispose());
+        }
+
+        // One execution per bound row, their results streamed as one.
+        using (AdbcStatement statement = connection.CreateStatement())
+        {
+            var schema = new Schema([new Field("d", Int32Type.Default, false)], null);
+            using var parameters = new RecordBatch(schema, [new Int32Array.Builder().AppendRange([1, 2, 3]).Build()], 3);
+            statement.SqlQuery = "SELECT @d * 10 AS x";
+            statement.Bind(parameters, schema);
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            List<RecordBatch> batches = await ReadAll(stream);
+            Assert.Equal([10, 20, 30], Numbers(batches));
+            batches.ForEach(b => b.Dispose());
+        }
+
+        // Billions of rows: a cancel stops the read promptly.
+        using (AdbcStatement statement = connection.CreateStatement())
+        {
+            statement.SqlQuery = "SELECT a.object_id AS a FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_objects c";
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            (await stream.ReadNextRecordBatchAsync())!.Dispose();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            statement.Cancel();
+            // The driver raises AdbcStatusCode.Cancelled, but it doesn't survive
+            // the C ABI yet: a C stream reports an error as errno and a message,
+            // and Apache.Arrow.Adbc's exporter doesn't implement
+            // AdbcErrorFromArrayStream (ADBC 1.1), nor does its importer call it,
+            // so the importer throws a plain exception. Check for Cancelled once
+            // it does (apache/arrow-adbc#4982).
+            Exception ex = await Assert.ThrowsAnyAsync<Exception>(async () =>
+            {
+                while (await stream.ReadNextRecordBatchAsync() is RecordBatch batch)
+                {
+                    batch.Dispose();
+                }
+            });
+            Assert.Contains("cancelled", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), $"Cancellation took {watch.Elapsed}");
+        }
+
+        using (AdbcStatement statement = connection.CreateStatement())
+        {
+            statement.SqlQuery = "SELECT 42 AS answer";
+            using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+            List<RecordBatch> batches = await ReadAll(stream);
+            Assert.Equal([42], Numbers(batches));
+            batches.ForEach(b => b.Dispose());
+        }
+    }
+
     /// <summary>Catalog functions and GetInfo, and a SQL error's status and number.</summary>
     [SkippableFact]
     public async Task CatalogFunctionsAndErrorsWithARealServer()
