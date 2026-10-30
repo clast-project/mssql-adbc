@@ -46,6 +46,10 @@ internal sealed class TdsSession : IDisposable
     private volatile bool _cancelPending;
     private volatile bool _attentionSent;
     private bool _attentionAcknowledged;
+    // The operation in progress (BeginOperation), and whether it was cancelled:
+    // then requests begun until EndOperation fail as cancelled, unsent.
+    private CancellationTokenSource? _operation;
+    private bool _cancelNext;
 
     private enum RequestState
     {
@@ -968,6 +972,12 @@ internal sealed class TdsSession : IDisposable
 
         lock (_requestLock)
         {
+            if (_cancelNext)
+            {
+                // Not sent at all: the server can miss an attention that
+                // closely follows a request, and run the request to its end.
+                throw CancelledException();
+            }
             _requestState = RequestState.Sending;
             _cancelPending = false;
             _attentionSent = false;
@@ -1005,15 +1015,49 @@ internal sealed class TdsSession : IDisposable
     }
 
     /// <summary>
+    /// Discards the request message being sent, after a failure while writing
+    /// it: ends it with the IGNORE bit, so the server ignores what was sent,
+    /// and reads the reply. A cancel meanwhile is not reported, so the caller
+    /// can report the original failure.
+    /// </summary>
+    public void AbortRequest()
+    {
+        EndRequest(abort: true);
+        try
+        {
+            DrainResponse();
+        }
+        catch (AdbcException ex) when (ex.Status == AdbcStatusCode.Cancelled)
+        {
+        }
+    }
+
+    /// <summary>
     /// Cancels the current request, if any; safe to call on any thread. While
     /// the request is being sent, the attention follows it; while the response
     /// is being read, it is sent at once. The reader then stops at the
     /// server's acknowledgment and throws <see cref="AdbcStatusCode.Cancelled"/>.
+    /// During an operation (<see cref="BeginOperation"/>), it also cancels
+    /// the requests the operation has yet to send, and its token.
     /// </summary>
-    public void Cancel()
+    public void Cancel() => CancelRequests()?.Cancel();
+
+    /// <summary>
+    /// <see cref="Cancel"/>, except that the operation's token source, if any,
+    /// is returned for the caller to cancel rather than cancelled: its
+    /// callbacks are the bound stream's code, so the caller cancels it once
+    /// it holds no locks of its own. Cancelling it late is harmless.
+    /// </summary>
+    public CancellationTokenSource? CancelRequests()
     {
+        CancellationTokenSource? operation;
         lock (_requestLock)
         {
+            operation = _operation;
+            if (operation != null)
+            {
+                _cancelNext = true;
+            }
             switch (_requestState)
             {
                 case RequestState.Sending:
@@ -1022,6 +1066,43 @@ internal sealed class TdsSession : IDisposable
                 case RequestState.Receiving when !_attentionSent:
                     SendAttention();
                     break;
+            }
+        }
+        // Cancelled outside the lock: the token's callbacks are the caller's code.
+        return operation;
+    }
+
+    /// <summary>
+    /// Starts an operation of several requests, one per bound parameter row.
+    /// Between two of them the session is idle, where a plain cancel would do
+    /// nothing; until <see cref="EndOperation"/>, <see cref="Cancel"/> instead
+    /// makes every request begun afterwards fail as cancelled without being
+    /// sent, and cancels the returned token, for reading the bound rows.
+    /// </summary>
+    public CancellationToken BeginOperation()
+    {
+        lock (_requestLock)
+        {
+            _operation = new CancellationTokenSource();
+            _cancelNext = false;
+            return _operation.Token;
+        }
+    }
+
+    /// <summary>
+    /// Ends the operation whose token <see cref="BeginOperation"/> returned,
+    /// if it is still the current one; later requests are cancelled only as
+    /// they run.
+    /// </summary>
+    public void EndOperation(CancellationToken operation)
+    {
+        lock (_requestLock)
+        {
+            if (_operation != null && _operation.Token == operation)
+            {
+                // Not disposed: a Cancel racing with this may still be cancelling it.
+                _operation = null;
+                _cancelNext = false;
             }
         }
     }

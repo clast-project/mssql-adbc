@@ -16,7 +16,7 @@ namespace Clast.Drivers.SqlServer;
 /// partitions, worker threads read them concurrently on separate sessions,
 /// and their record batches are merged in arrival order (not query order).
 /// </summary>
-internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
+internal sealed class SqlServerParallelQueryStream : IArrowArrayStream, IBackgroundStream
 {
     private readonly SqlServerConnection _connection;
     private readonly Channel<RecordBatch> _channel;
@@ -43,7 +43,7 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
             FullMode = BoundedChannelFullMode.Wait,
         });
         _running = sessions.Length;
-        connection.SetParallelStream(this);
+        connection.SetBackgroundStream(this);
         _workers = new Task[sessions.Length];
         for (int i = 0; i < sessions.Length; i++)
         {
@@ -61,14 +61,15 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
     /// <paramref name="parallelism"/> workers, the first on that session and
     /// the rest on helper sessions from the connection's pool.
     /// </summary>
-    public static IArrowArrayStream Start(SqlServerConnection connection, string sql, string column, int parallelism, int partitionCount)
+    /// <param name="readAhead">Batches to decode ahead when a single partition leaves the query serial.</param>
+    public static IArrowArrayStream Start(SqlServerConnection connection, string sql, string column, int parallelism, int partitionCount, int readAhead)
     {
         // Several partitions per worker, so a worker on a slow session takes fewer of them.
         PartitionedResult partitions = SqlServerPartitions.Execute(connection.Session, sql, column, Math.Max(partitionCount, parallelism * PartitionsPerWorker));
         int workers = Math.Min(parallelism, partitions.PartitionDescriptors.Count);
         if (workers <= 1)
         {
-            return connection.ExecuteQueryStream(SqlServerPartitions.Decode(partitions.PartitionDescriptors[0]));
+            return connection.ExecuteQueryStream(SqlServerPartitions.Decode(partitions.PartitionDescriptors[0]), readAhead);
         }
 
         var sessions = new TdsSession[workers];
@@ -221,6 +222,6 @@ internal sealed class SqlServerParallelQueryStream : IArrowArrayStream
         _cancel.Dispose();
 
         _connection.ReturnHelperSessions(_sessions.AsSpan(1));
-        _connection.SetParallelStream(null);
+        _connection.SetBackgroundStream(null);
     }
 }

@@ -72,6 +72,8 @@ internal sealed class SqlServerConnectionSettings
     /// <summary>Whether result strings are returned as <see cref="Utf16StringType"/> rather than utf8.</summary>
     public bool Utf16Strings { get; private set; }
     public int ParallelReads { get; private set; } = 1;
+    /// <summary>Batches a serial result stream decodes ahead of the caller on a background thread; 0 for none.</summary>
+    public int ReadAhead { get; private set; }
     public string? ServerSpn { get; private set; }
 
     /// <summary>The server name sent in LOGIN7; after routing, the routed <c>host,port</c>, as SqlClient sends it.</summary>
@@ -204,6 +206,10 @@ internal sealed class SqlServerConnectionSettings
         if (options.TryGetValue(SqlServerParameters.ParallelReads, out string? parallel))
         {
             settings.ParallelReads = ParseParallelReads(parallel);
+        }
+        if (options.TryGetValue(SqlServerParameters.ReadAhead, out string? readAhead))
+        {
+            settings.ReadAhead = ParseReadAhead(readAhead);
         }
 
         // LocalDB has no TLS certificate and answers PRELOGIN with "encryption not
@@ -504,6 +510,12 @@ internal sealed class SqlServerConnectionSettings
     {
         int count = ParseInt(SqlServerParameters.ParallelReads, value);
         return count is >= 1 and <= 256 ? count : throw InvalidOption(SqlServerParameters.ParallelReads, value);
+    }
+
+    public static int ParseReadAhead(string value)
+    {
+        int count = ParseInt(SqlServerParameters.ReadAhead, value);
+        return count is >= 0 and <= 16 ? count : throw InvalidOption(SqlServerParameters.ReadAhead, value);
     }
 
     private static string NormalizeHost(string host) =>

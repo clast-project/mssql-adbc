@@ -145,18 +145,28 @@ internal static class SqlServerRpc
         }
     }
 
-    /// <summary>The rows of the bound data, one batch at a time.</summary>
+    /// <summary>
+    /// The rows of the bound data, one batch at a time, for an operation on
+    /// the session (<see cref="TdsSession.BeginOperation"/>), which ends when
+    /// they are disposed. A cancel of the operation stops a read of the data
+    /// that honours a cancellation token.
+    /// </summary>
     private sealed class ParameterRows : IDisposable
     {
+        private readonly TdsSession _session;
         private readonly IArrowArrayStream _data;
         private readonly byte[] _collation;
+        private readonly CancellationToken _cancel;
         private BatchParameters? _current;
         private int _row = -1;
+        private bool _ended;
 
-        public ParameterRows(IArrowArrayStream data, byte[] collation)
+        public ParameterRows(TdsSession session, IArrowArrayStream data)
         {
+            _session = session;
             _data = data;
-            _collation = collation;
+            _collation = session.DefaultCollation;
+            _cancel = session.BeginOperation();
         }
 
         public BatchParameters Current => _current!;
@@ -169,9 +179,19 @@ internal static class SqlServerRpc
             {
                 _current?.Dispose();
                 _current = null;
-                RecordBatch? batch = _data.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+                RecordBatch? batch;
+                try
+                {
+                    batch = _data.ReadNextRecordBatchAsync(_cancel).AsTask().GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException) when (_cancel.IsCancellationRequested)
+                {
+                    throw TdsSession.CancelledException();
+                }
                 if (batch == null)
                 {
+                    // No more requests to send: a later cancel is for whatever runs next.
+                    EndOperation();
                     return false;
                 }
                 _current = new BatchParameters(batch, _collation);
@@ -180,8 +200,18 @@ internal static class SqlServerRpc
             return true;
         }
 
+        private void EndOperation()
+        {
+            if (!_ended)
+            {
+                _ended = true;
+                _session.EndOperation(_cancel);
+            }
+        }
+
         public void Dispose()
         {
+            EndOperation();
             _current?.Dispose();
             _current = null;
             _data.Dispose();
@@ -223,26 +253,36 @@ internal static class SqlServerRpc
     /// </summary>
     public static long ExecuteUpdate(TdsSession session, string sql, IArrowArrayStream data)
     {
-        using var rows = new ParameterRows(data, session.DefaultCollation);
+        using var rows = new ParameterRows(session, data);
         long total = -1;
         bool more = rows.MoveNext();
         while (more)
         {
             session.BeginRequest(PacketType.Rpc);
-            session.WriteAllHeaders();
-            int count = 0;
-            long start = session.Writer.BytesWritten;
-            do
+            try
             {
-                if (count > 0)
+                session.WriteAllHeaders();
+                int count = 0;
+                long start = session.Writer.BytesWritten;
+                do
                 {
-                    session.Writer.WriteByte(BatchSeparator);
+                    if (count > 0)
+                    {
+                        session.Writer.WriteByte(BatchSeparator);
+                    }
+                    WriteCall(session, sql, rows.Current, rows.Row);
+                    count++;
+                    // Reads the bound stream mid-message: a failure or cancel there aborts the message.
+                    more = rows.MoveNext();
                 }
-                WriteCall(session, sql, rows.Current, rows.Row);
-                count++;
-                more = rows.MoveNext();
+                while (more && count < RowsPerMessage && session.Writer.BytesWritten - start < BytesPerMessage && !session.IsCancelRequested);
             }
-            while (more && count < RowsPerMessage && session.Writer.BytesWritten - start < BytesPerMessage && !session.IsCancelRequested);
+            catch (Exception)
+            {
+                // Part of the message may already be sent; the server is told to ignore it.
+                session.AbortRequest();
+                throw;
+            }
             session.EndRequest();
 
             long reported = session.DrainResponse();
@@ -260,7 +300,7 @@ internal static class SqlServerRpc
     /// </summary>
     public static IArrowArrayStream ExecuteQuery(TdsSession session, string sql, IArrowArrayStream data)
     {
-        var continuation = new Continuation(session, sql, new ParameterRows(data, session.DefaultCollation));
+        var continuation = new Continuation(session, sql, new ParameterRows(session, data));
         try
         {
             while (continuation.SendNext())
@@ -300,8 +340,16 @@ internal static class SqlServerRpc
                 return false;
             }
             session.BeginRequest(PacketType.Rpc);
-            session.WriteAllHeaders();
-            WriteCall(session, sql, rows.Current, rows.Row);
+            try
+            {
+                session.WriteAllHeaders();
+                WriteCall(session, sql, rows.Current, rows.Row);
+            }
+            catch (Exception)
+            {
+                session.AbortRequest();
+                throw;
+            }
             session.EndRequest();
             return true;
         }

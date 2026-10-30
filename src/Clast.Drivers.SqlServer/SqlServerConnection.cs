@@ -16,7 +16,7 @@ public sealed class SqlServerConnection : AdbcConnection
     private TdsSession _session;
     private readonly Stack<TdsSession> _helpers = new();
     private bool _disposed;
-    private SqlServerParallelQueryStream? _parallelStream;
+    private IBackgroundStream? _backgroundStream;
     private bool _autoCommit = true;
 
     internal SqlServerConnection(IReadOnlyDictionary<string, string> options)
@@ -44,16 +44,16 @@ public sealed class SqlServerConnection : AdbcConnection
     internal TdsSession Session => _session;
 
     /// <summary>
-    /// Before a request: throws if a parallel result stream is reading on
-    /// this connection's session (its workers move between partitions, so the
+    /// Before a request: throws if a parallel or read-ahead result stream is
+    /// reading on this connection's session (between partitions or results the
     /// session can look idle while it is still in use), and replaces a session
     /// whose connection broke while idle (see <see cref="Recover"/>).
     /// </summary>
     internal void EnsureIdle()
     {
-        if (Volatile.Read(ref _parallelStream) != null)
+        if (Volatile.Read(ref _backgroundStream) != null)
         {
-            throw new AdbcException("A parallel result stream is still open; read it to the end or dispose it first", AdbcStatusCode.InvalidState);
+            throw new AdbcException("A result stream is still reading in the background; read it to the end or dispose it first", AdbcStatusCode.InvalidState);
         }
         if (!_session.IsConnectionAlive())
         {
@@ -95,7 +95,7 @@ public sealed class SqlServerConnection : AdbcConnection
         }
     }
 
-    internal void SetParallelStream(SqlServerParallelQueryStream? stream) => Volatile.Write(ref _parallelStream, stream);
+    internal void SetBackgroundStream(IBackgroundStream? stream) => Volatile.Write(ref _backgroundStream, stream);
 
     public override AdbcStatement CreateStatement()
     {
@@ -117,11 +117,15 @@ public sealed class SqlServerConnection : AdbcConnection
     public override IArrowArrayStream ReadPartition(PartitionDescriptor partition)
     {
         EnsureIdle();
-        return ExecuteQueryStream(SqlServerPartitions.Decode(partition));
+        return ExecuteQueryStream(SqlServerPartitions.Decode(partition), _session.Settings.ReadAhead);
     }
 
-    /// <summary>Sends a batch and returns a stream over its first result set, for the application.</summary>
-    internal IArrowArrayStream ExecuteQueryStream(string sql) => SqlServerQueryStream.Execute(_session, sql, _session.Settings.Utf16Strings);
+    /// <summary>
+    /// Sends a batch and returns a stream over its first result set, for the
+    /// application, decoded <paramref name="readAhead"/> batches ahead.
+    /// </summary>
+    internal IArrowArrayStream ExecuteQueryStream(string sql, int readAhead) =>
+        SqlServerReadAheadStream.Start(this, _session, SqlServerQueryStream.Execute(_session, sql, _session.Settings.Utf16Strings), readAhead);
 
     /// <summary>
     /// Returns <paramref name="count"/> idle helper sessions logged in with
@@ -503,7 +507,7 @@ public sealed class SqlServerConnection : AdbcConnection
     public override void Cancel()
     {
         _session.Cancel();
-        Volatile.Read(ref _parallelStream)?.Cancel();
+        Volatile.Read(ref _backgroundStream)?.Cancel();
     }
 
     public override void Dispose()

@@ -175,15 +175,7 @@ internal static class SqlServerBulkIngest
         {
             // Discard what has been sent of the message; the server ignores it.
             loading = false;
-            session.EndRequest(abort: true);
-            try
-            {
-                session.DrainResponse();
-            }
-            catch (AdbcException ex) when (ex.Status == AdbcStatusCode.Cancelled)
-            {
-                // Cancelled while aborting; report the original failure.
-            }
+            session.AbortRequest();
             throw;
         }
 

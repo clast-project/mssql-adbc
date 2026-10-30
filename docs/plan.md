@@ -350,6 +350,29 @@ them; not on Synapse or Fabric, which have neither type.
   one slow session from setting the pace (4 workers: std. dev. 225 → 18 ms).
   Falls back to a single stream inside a transaction; local temp tables are
   not visible to helper sessions.
+- Read-ahead (`adbc.mssql.read_ahead=N`, 0 to 16, default 0): a serial
+  stream decodes on a background thread into a bounded channel, up to N
+  batches ahead of the caller (it waits for room before decoding the next),
+  so decoding overlaps the caller's work on the previous batch. Batches stay
+  in order; an error follows the batches decoded before it, and a cancel
+  takes effect at once. The connection stays busy until the stream ends or
+  is disposed.
+- Bound parameters run one execution per row, with the session idle between
+  them, where an attention has nothing to cancel. So while the rows last, the
+  session is in an operation (`TdsSession.BeginOperation`): a cancel then also
+  keeps later executions from being sent at all (an attention right behind a
+  request can be missed by the server, which then runs it to the end), and
+  cancels the token passed to the bound stream's reads. This covers serial,
+  read-ahead and ExecuteUpdate alike, including the executions ExecuteQuery
+  runs before the first result set. A bound stream that ignores the token
+  can still hold up a cancel until its read returns. The token is cancelled
+  with no driver lock held, since its callbacks are the caller's code.
+  ExecuteUpdate reads the rows while sending a message of several calls; a
+  failure or cancel there ends the message with the IGNORE bit, as
+  ingestion does, so the server discards the part it has received.
+  1M rows locally, with a consumer that spends a fixed time per row (off /
+  N=1 / N=2): 2 µs/row 2.84 / 2.06 / 2.06 s (consumer-bound), 0.5 µs/row
+  1.25 / 0.86 / 0.83 s, no consumer work 0.93 / 0.84 / 0.80 s (within noise).
 - Cancellation uses the TDS attention signal. `Cancel` on the connection or
   statement (or a cancelled token on any async call or
   `ReadNextRecordBatchAsync`) sends an attention while the response is being
