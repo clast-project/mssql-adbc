@@ -100,6 +100,17 @@ internal abstract unsafe class ColumnEncoder : IDisposable
         new AdbcException(
             $"Value in row {row} does not fit target column '{Target.Name}' ({Target.SqlTypeName})",
             AdbcStatusCode.InvalidData);
+
+    /// <summary>Throws unless a clast.utf16 value is whole code units: an odd byte would otherwise be dropped or sent as is.</summary>
+    protected void CheckUtf16(ReadOnlySpan<byte> utf16, int row)
+    {
+        if ((utf16.Length & 1) != 0)
+        {
+            throw new AdbcException(
+                $"Value in row {row} for column '{Target.Name}' is not UTF-16: it has an odd number of bytes",
+                AdbcStatusCode.InvalidData);
+        }
+    }
 }
 
 internal static class EncoderFactory
@@ -457,12 +468,7 @@ internal sealed unsafe class StringEncoder : ColumnEncoder
     /// <summary>A clast.utf16 value: as is into nvarchar, else transcoded (unpaired surrogates become U+FFFD or the code page's default).</summary>
     private void WriteUtf16(PacketWriter writer, ReadOnlySpan<byte> utf16, int row)
     {
-        if ((utf16.Length & 1) != 0)
-        {
-            throw new AdbcException(
-                $"Value in row {row} for column '{Target.Name}' is not UTF-16: it has an odd number of bytes",
-                AdbcStatusCode.InvalidData);
-        }
+        CheckUtf16(utf16, row);
         if (_utf16)
         {
             WriteValue(writer, utf16, _plp);
@@ -576,6 +582,7 @@ internal sealed unsafe class BinaryEncoder : ColumnEncoder
         var value = new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start);
         if (_utf16)
         {
+            CheckUtf16(value, row);
             // The server reads xml bytes as UTF-8 unless they start with a UTF-16 byte order mark.
             if (_marked.Length < value.Length + 2)
             {
@@ -628,6 +635,7 @@ internal sealed unsafe class HierarchyIdEncoder : ColumnEncoder
         var text = new ReadOnlySpan<byte>(_data + start, _offsets[row + 1] - start);
         if (_utf16)
         {
+            CheckUtf16(text, row);
             text = Narrow(text);
         }
         if (!HierarchyId.TryParse(text, _bytes, out int length, out string? error))

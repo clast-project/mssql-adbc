@@ -271,11 +271,20 @@ public sealed class Utf16StringTests : IDisposable
         Assert.Equal(new string?[] { "日本", "<a/>", "/3/" }, Enumerable.Range(0, 3).Select(c => Utf16(values, c).GetString(0)));
     }
 
-    [SkippableFact]
-    public void IngestRejectsAnOddNumberOfBytes()
+    /// <summary>
+    /// An odd trailing byte fails in every text target, rather than being
+    /// dropped (<c>/</c> plus a stray byte would be the root hierarchyid) or
+    /// sent on for the server to reject.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("xml")]
+    [InlineData("hierarchyid")]
+    public void IngestRejectsAnOddNumberOfBytes(string? sqlType)
     {
-        var schema = new Schema([new Field("s", Utf16StringType.Default, true)], null);
-        var odd = new Utf16StringArray(Utf16StringType.Default, new BinaryArray.Builder().Append(new byte[] { 0x41 }.AsSpan()).Build());
+        var schema = new Schema(
+            [new Field("s", Utf16StringType.Default, true, sqlType == null ? null : [new KeyValuePair<string, string>("MSSQL:type", sqlType)])], null);
+        var odd = new Utf16StringArray(Utf16StringType.Default, new BinaryArray.Builder().Append(new byte[] { 0x2F, 0x00, 0x41 }.AsSpan()).Build());
         using AdbcStatement ingest = _connection.BulkIngest(null, null, "clast_utf16_odd", BulkIngestMode.Create, isTemporary: true);
         ingest.Bind(new RecordBatch(schema, [odd], 1), schema);
         Assert.Equal(AdbcStatusCode.InvalidData, Assert.ThrowsAny<AdbcException>(() => ingest.ExecuteUpdate()).Status);
