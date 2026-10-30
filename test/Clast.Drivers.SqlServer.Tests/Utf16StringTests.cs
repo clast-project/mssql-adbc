@@ -1,6 +1,7 @@
 // Copyright (c) clast-project. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the project root for license information.
 
+using System.Runtime.InteropServices;
 using Apache.Arrow;
 using Apache.Arrow.Adbc;
 using Apache.Arrow.C;
@@ -31,6 +32,41 @@ public sealed class Utf16StringTests : IDisposable
     }
 
     private static Utf16StringArray Utf16(RecordBatch batch, int column) => Assert.IsType<Utf16StringArray>(batch.Column(column));
+
+    /// <summary>A clast.utf16 array of the strings' code units, unpaired surrogates included.</summary>
+    internal static Utf16StringArray Utf16Values(params string?[] values)
+    {
+        var builder = new BinaryArray.Builder();
+        foreach (string? value in values)
+        {
+            if (value == null)
+            {
+                builder.AppendNull();
+            }
+            else
+            {
+                builder.Append(MemoryMarshal.AsBytes(value.AsSpan()));
+            }
+        }
+        return new Utf16StringArray(Utf16StringType.Default, builder.Build());
+    }
+
+    private void Execute(string sql)
+    {
+        using AdbcStatement statement = _connection.CreateStatement();
+        statement.SqlQuery = sql;
+        statement.ExecuteUpdate();
+    }
+
+    private static List<RecordBatch> ReadAll(IArrowArrayStream stream)
+    {
+        var batches = new List<RecordBatch>();
+        while (stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult() is RecordBatch batch)
+        {
+            batches.Add(batch);
+        }
+        return batches;
+    }
 
     [Fact]
     public void RejectsAnUnknownEncoding()
@@ -163,6 +199,129 @@ public sealed class Utf16StringTests : IDisposable
         Assert.Equal(1, ingest.ExecuteUpdate().AffectedRows);
         using RecordBatch batch = ReadOne("SELECT s FROM #clast_utf16", out _);
         Assert.Equal("é", Utf16(batch, 0).GetString(0));
+    }
+
+    [SkippableFact]
+    public void IngestTakesUtf16IntoEveryTextType()
+    {
+        const string text = "héllo 😀 日本";
+        string big = string.Concat(Enumerable.Repeat("日本語テキスト", 3000));
+        const string lone = "a\uD800b";
+        Execute("""
+            CREATE TABLE #clast_utf16_in (nv nvarchar(50), nc nchar(4), nmax nvarchar(max), v1252 varchar(20) COLLATE Latin1_General_CI_AS,
+                vutf8 varchar(50) COLLATE Latin1_General_100_CI_AS_SC_UTF8, vmax varchar(max) COLLATE Latin1_General_100_CI_AS_SC_UTF8,
+                x xml, h hierarchyid)
+            """);
+        string[] names = ["nv", "nc", "nmax", "v1252", "vutf8", "vmax", "x", "h"];
+        var schema = new Schema(names.Select(n => new Field(n, Utf16StringType.Default, true)), null);
+        IArrowArray[] columns =
+        [
+            Utf16Values(text, lone, null),
+            Utf16Values("ab", "", null),
+            Utf16Values(big, lone, null),
+            Utf16Values("héllo", "日", null),
+            Utf16Values(text, lone, null),
+            Utf16Values(big, "", null),
+            Utf16Values("<a>é 😀</a>", "<b/>", null),
+            Utf16Values("/1/2.5/", "/", null),
+        ];
+        using (AdbcStatement ingest = _connection.BulkIngest(null, null, "clast_utf16_in", BulkIngestMode.Append, isTemporary: true))
+        {
+            ingest.Bind(new RecordBatch(schema, columns, 3), schema);
+            Assert.Equal(3, ingest.ExecuteUpdate().AffectedRows);
+        }
+
+        using RecordBatch batch = ReadOne("SELECT nv, nc, nmax, v1252, vutf8, vmax, x, CAST(h AS nvarchar(100)) AS h FROM #clast_utf16_in ORDER BY h DESC", out _);
+        Assert.Equal(
+            new string?[] { text, "ab  ", big, "héllo", text, big, "<a>é 😀</a>", "/1/2.5/" },
+            Enumerable.Range(0, names.Length).Select(c => Utf16(batch, c).GetString(0)));
+
+        // Unpaired surrogates pass through into nvarchar; varchar can't hold them.
+        Assert.Equal(lone, Utf16(batch, 0).GetSpan(1).ToString());
+        Assert.Equal("    ", Utf16(batch, 1).GetString(1));
+        Assert.Equal(lone, Utf16(batch, 2).GetSpan(1).ToString());
+        Assert.Equal("?", Utf16(batch, 3).GetString(1));
+        Assert.Equal("a�b", Utf16(batch, 4).GetString(1));
+        Assert.Equal("", Utf16(batch, 5).GetString(1));
+        Assert.Equal("<b/>", Utf16(batch, 6).GetString(1));
+        Assert.Equal("/", Utf16(batch, 7).GetString(1));
+        Assert.All(Enumerable.Range(0, names.Length), c => Assert.True(batch.Column(c).IsNull(2)));
+    }
+
+    [SkippableFact]
+    public void IngestCreatesTablesForUtf16()
+    {
+        var schema = new Schema(
+        [
+            new Field("s", Utf16StringType.Default, true),
+            new Field("x", Utf16StringType.Default, true, [new KeyValuePair<string, string>("MSSQL:type", "xml")]),
+            new Field("h", Utf16StringType.Default, true, [new KeyValuePair<string, string>("MSSQL:type", "hierarchyid")]),
+        ], null);
+        using (AdbcStatement ingest = _connection.BulkIngest(null, null, "clast_utf16_new", BulkIngestMode.Create, isTemporary: true))
+        {
+            ingest.Bind(new RecordBatch(schema, [Utf16Values("日本"), Utf16Values("<a/>"), Utf16Values("/3/")], 1), schema);
+            Assert.Equal(1, ingest.ExecuteUpdate().AffectedRows);
+        }
+        using RecordBatch batch = ReadOne("""
+            SELECT STRING_AGG(t.name, ',') WITHIN GROUP (ORDER BY c.column_id) FROM tempdb.sys.columns c
+                JOIN tempdb.sys.types t ON t.user_type_id = c.user_type_id WHERE c.object_id = OBJECT_ID('tempdb..#clast_utf16_new')
+            """, out _);
+        Assert.Equal("nvarchar,xml,hierarchyid", Utf16(batch, 0).GetString(0));
+        using RecordBatch values = ReadOne("SELECT s, x, CAST(h AS nvarchar(10)) FROM #clast_utf16_new", out _);
+        Assert.Equal(new string?[] { "日本", "<a/>", "/3/" }, Enumerable.Range(0, 3).Select(c => Utf16(values, c).GetString(0)));
+    }
+
+    /// <summary>
+    /// An odd trailing byte fails in every text target, rather than being
+    /// dropped (<c>/</c> plus a stray byte would be the root hierarchyid) or
+    /// sent on for the server to reject.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("xml")]
+    [InlineData("hierarchyid")]
+    public void IngestRejectsAnOddNumberOfBytes(string? sqlType)
+    {
+        var schema = new Schema(
+            [new Field("s", Utf16StringType.Default, true, sqlType == null ? null : [new KeyValuePair<string, string>("MSSQL:type", sqlType)])], null);
+        var odd = new Utf16StringArray(Utf16StringType.Default, new BinaryArray.Builder().Append(new byte[] { 0x2F, 0x00, 0x41 }.AsSpan()).Build());
+        using AdbcStatement ingest = _connection.BulkIngest(null, null, "clast_utf16_odd", BulkIngestMode.Create, isTemporary: true);
+        ingest.Bind(new RecordBatch(schema, [odd], 1), schema);
+        Assert.Equal(AdbcStatusCode.InvalidData, Assert.ThrowsAny<AdbcException>(() => ingest.ExecuteUpdate()).Status);
+    }
+
+    /// <summary>Parameters take clast.utf16 whatever the string encoding option, so this reads with utf8.</summary>
+    [SkippableFact]
+    public void ParametersTakeUtf16()
+    {
+        using AdbcConnection utf8 = new SqlServerDriver().Open(SqlServerTestConfiguration.Load().Options).Connect(null);
+        using AdbcStatement statement = utf8.CreateStatement();
+        statement.SqlQuery = "SELECT @p AS s, CAST(DATALENGTH(@p) AS int) AS d, UNICODE(SUBSTRING(@p, 2, 1)) AS u";
+        var schema = new Schema([new Field("p", Utf16StringType.Default, true)], null);
+
+        // Short values: nvarchar(4000).
+        statement.Bind(new RecordBatch(schema, [Utf16Values("héllo 😀", "a\uD800b", null)], 3), schema);
+        List<RecordBatch> batches = ReadAll(statement.ExecuteQuery().Stream!);
+        try
+        {
+            string?[] s = batches.SelectMany(b => Enumerable.Range(0, b.Length).Select(i => ((StringArray)b.Column("s")).GetString(i))).ToArray();
+            int?[] d = batches.SelectMany(b => Enumerable.Range(0, b.Length).Select(i => ((Int32Array)b.Column("d")).GetValue(i))).ToArray();
+            int?[] u = batches.SelectMany(b => Enumerable.Range(0, b.Length).Select(i => ((Int32Array)b.Column("u")).GetValue(i))).ToArray();
+            Assert.Equal(new string?[] { "héllo 😀", "a�b", null }, s);
+            Assert.Equal([16, 6, null], d);
+            Assert.Equal([0xE9, 0xD800, null], u);        }
+        finally
+        {
+            batches.ForEach(b => b.Dispose());
+        }
+
+        // A value over 4000 characters: nvarchar(max).
+        string big = new string('日', 4001);
+        statement.Bind(new RecordBatch(schema, [Utf16Values(big)], 1), schema);
+        using IArrowArrayStream stream = statement.ExecuteQuery().Stream!;
+        using RecordBatch batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult()!;
+        Assert.Equal(big, ((StringArray)batch.Column("s")).GetString(0));
+        Assert.Equal(8002, ((Int32Array)batch.Column("d")).GetValue(0));
     }
 
     [SkippableFact]

@@ -343,8 +343,8 @@ internal static class SqlServerBulkIngest
         field.Metadata != null && field.Metadata.TryGetValue(DecoderFactory.SqlTypeMetadataKey, out string? name)
             ? (name.ToUpperInvariant(), field.DataType) switch
             {
-                ("XML", StringType) => "xml",
-                ("HIERARCHYID", StringType or BinaryType) => "hierarchyid",
+                ("XML", StringType or Utf16StringType) => "xml",
+                ("HIERARCHYID", StringType or Utf16StringType or BinaryType) => "hierarchyid",
                 _ => null,
             }
             : null;
@@ -352,7 +352,7 @@ internal static class SqlServerBulkIngest
     private static string WarehouseType(Field field) => field.DataType switch
     {
         UInt8Type => "smallint",
-        StringType or JsonType => "varchar(max)",
+        StringType or JsonType or Utf16StringType => "varchar(max)",
         // Exactly fixed-size binary: decimals and GUIDs derive from it.
         FixedSizeBinaryType f when f.GetType() == typeof(FixedSizeBinaryType) && f.ByteWidth <= 8000 => $"varbinary({f.ByteWidth})",
         TimestampType t => $"datetime2({Math.Min(Scale(t.Unit), 6)})",
@@ -378,7 +378,7 @@ internal static class SqlServerBulkIngest
         FloatType => "real",
         DoubleType => "float",
         Decimal128Type d when d.Precision <= 38 => $"decimal({d.Precision},{d.Scale})",
-        StringType => "nvarchar(max)",
+        StringType or Utf16StringType => "nvarchar(max)",
         JsonType => "json",
         VariantType => "sql_variant",
         FixedSizeListType { ValueDataType: FloatType } v => $"vector({v.ListSize})",

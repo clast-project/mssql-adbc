@@ -284,7 +284,10 @@ page, or from UTF-8, into UTF-16. It is for consumers whose strings are UTF-16
 (Analysis Services is the first). It applies to the results the application
 asks for (queries, partitions, ExecuteSchema, GetTableSchema); catalog
 functions keep their standard utf8 schemas, and the driver reads its own
-queries as utf8. Ingest and bound parameters don't take `clast.utf16` yet.
+queries as utf8. Ingest and bound parameters take `clast.utf16` wherever they
+take utf8, whatever the option: into nvarchar it is sent as it is, into
+varchar it is transcoded (unpaired surrogates become U+FFFD or `?`), into xml
+it is sent behind a UTF-16 byte order mark, and as a parameter it is nvarchar.
 
 Every field carries the SQL Server type in `MSSQL:type` metadata. Ingest
 into sql_variant takes variants and maps primitives back (int8/int16 →
