@@ -27,8 +27,6 @@ namespace Clast.Drivers.SqlServer.Substrait;
 /// </remarks>
 public static class SqlServerSubstrait
 {
-    private const string DialectResource = "Clast.Drivers.SqlServer.sqlserver_dialect.yaml";
-
     /// <summary>
     /// The collation string values get by default
     /// (<see cref="SqlServerParameters.SubstraitCollation"/>): binary, so that
@@ -39,6 +37,8 @@ public static class SqlServerSubstrait
 
     /// <summary>The Substrait release whose protobuf messages and extensions the translation follows.</summary>
     public const string SubstraitVersion = "0.107.0";
+
+    private const string DialectResource = "Clast.Drivers.SqlServer.sqlserver_dialect.yaml";
 
     private static readonly Lazy<string> s_dialect = new(() =>
     {
@@ -79,12 +79,82 @@ public static class SqlServerSubstrait
         return emitter.EmitRoot(root, nested, out _);
     }
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Translates a plan for the remote pushdown (see
+    /// <see cref="TSqlEmitter.EmitPushdown"/>).
+    /// </summary>
+    internal static string TranslatePushdown(byte[] plan, bool ignoreNulls, out int columnCount, out List<bool> orderDescending,
+                                             Func<IReadOnlyList<string>, IReadOnlyDictionary<string, string>?>? columnSqlTypes = null,
+                                             Func<IReadOnlyList<string>, string?>? catalogFunctions = null,
+                                             Func<IReadOnlyList<string>, string?>? catalogTableFunctions = null,
+                                             Func<bool>? consistentReads = null,
+                                             Func<IReadOnlyList<string>, IReadOnlyDictionary<string, (int Bytes, bool Unicode)>?>? columnByteLengths = null)
+        => TranslatePushdown(plan, ignoreNulls, out columnCount, out orderDescending, out _, columnSqlTypes, catalogFunctions,
+                             catalogTableFunctions, consistentReads, columnByteLengths);
+
+    /// <param name="write">For a plan that writes (INSERT … SELECT, DELETE, UPDATE), the operation, the target table
+    /// and the columns it writes; the query is then a statement with no result, and <paramref name="columnCount"/>
+    /// is 1 — the affected-row count the host reports; Source names the table a moved-rows INSERT deletes from
+    /// (<c>DELETE … OUTPUT DELETED.* INTO</c>). Null for a query.</param>
+    internal static string TranslatePushdown(byte[] plan, bool ignoreNulls, out int columnCount, out List<bool> orderDescending,
+                                             out (int Op, IReadOnlyList<string> Table, IReadOnlyList<string> Columns, IReadOnlyList<string>? Source)? write,
+                                             Func<IReadOnlyList<string>, IReadOnlyDictionary<string, string>?>? columnSqlTypes = null,
+                                             Func<IReadOnlyList<string>, string?>? catalogFunctions = null,
+                                             Func<IReadOnlyList<string>, string?>? catalogTableFunctions = null,
+                                             Func<bool>? consistentReads = null,
+                                             Func<IReadOnlyList<string>, IReadOnlyDictionary<string, (int Bytes, bool Unicode)>?>? columnByteLengths = null)
+    {
+        if (plan == null || plan.Length == 0)
+        {
+            throw new SubstraitTranslationException("The Substrait plan is empty.");
+        }
+        var decoder = new SubstraitPlanDecoder(plan);
+        RootRel root = decoder.DecodePlan();
+        // [FABRICATOR-PATCH: OURS-BY-DESIGN] the host read part of this plan ONCE and the plan reads it once per copy:
+        // the copies agree only if the server reads one statement consistently
+        if (decoder.PlanOptimizations.Contains("fabricator.repeated_reads") && consistentReads?.Invoke() != true)
+            throw SubstraitTranslationException.Unsupported(
+                "the query reads the same rows more than once, and one statement would not read them consistently here " +
+                "(neither READ_COMMITTED_SNAPSHOT nor ALLOW_SNAPSHOT_ISOLATION, or a transaction holds a connection)");
+        // IGNORE NULLS, DATETRUNC and LTRIM / RTRIM with characters arrived together, with SQL Server 2022
+        var emitter = new TSqlEmitter(decoder.PerRecordEvaluation, DefaultCollation, columnSqlTypes: columnSqlTypes)
+        {
+            SupportsIgnoreNulls = ignoreNulls, SupportsDateTrunc = ignoreNulls, SupportsTrimCharacters = ignoreNulls,
+            SingleJoinAnyRow = decoder.PlanOptimizations.Contains("fabricator.single_join_any_row"), CatalogFunctions = catalogFunctions,
+            CatalogTableFunctions = catalogTableFunctions, ColumnByteLengths = columnByteLengths
+        };
+        if (root.Input is WriteRel writeRel)
+        {
+            if (writeRel.Enhancement == SubstraitFields.Enhancement_FabricatorMerge)
+            {
+                string merge = emitter.EmitMerge(writeRel);
+                // the columns the MERGE inserts, for the INSERT rules (identity, keep_nulls)
+                var insertColumns = writeRel.ColumnNames.Where(c => c.StartsWith("i:", StringComparison.Ordinal)).Select(c => c.Substring(2)).ToList();
+                write = (SubstraitFields.WriteOp_FabricatorMerge, writeRel.TableNames, insertColumns, null);
+                columnCount = 1;
+                orderDescending = new List<bool>();
+                return merge;
+            }
+            string sql = writeRel.Op == SubstraitFields.WriteOp_Insert
+                ? emitter.EmitInsert(writeRel)
+                : emitter.EmitDeleteOrUpdate(writeRel);
+            // a moved-rows INSERT (EmitMovedDelete) also names the table it deletes from
+            var source = writeRel.Input is WriteRel { Op: SubstraitFields.WriteOp_Delete } moved ? moved.TableNames : null;
+            write = (writeRel.Op, writeRel.TableNames, writeRel.ColumnNames, source);
+            columnCount = 1;
+            orderDescending = new List<bool>();
+            return sql;
+        }
+        write = null;
+        return emitter.EmitPushdown(root, out columnCount, out orderDescending);
+    }
+
     /// <summary>Checks that a collation name is a plain identifier, since it becomes part of the query.</summary>
     internal static string CheckCollation(string collation)
     {
         if (collation.Length > 128 || !collation.All(ch => ch is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_'))
         {
-            throw new Apache.Arrow.Adbc.AdbcException($"'{collation}' is not a collation name.", Apache.Arrow.Adbc.AdbcStatusCode.InvalidArgument);
+            throw new SubstraitTranslationException($"'{collation}' is not a collation name."); // [FABRICATOR-PATCH: OURS-BY-DESIGN] no ADBC
         }
         return collation;
     }

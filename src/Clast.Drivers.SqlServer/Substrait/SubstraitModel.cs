@@ -73,6 +73,8 @@ readonly struct SType : IEquatable<SType>
     public bool IsKnown => Kind != TypeKind.Unknown;
 
     public bool IsStringLike => Kind is TypeKind.String or TypeKind.VarChar or TypeKind.FixedChar;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] binary and fixed binary.</summary>
+    public bool IsBinaryLike => Kind is TypeKind.Binary or TypeKind.FixedBinary;
 
     public bool IsInteger => Kind is TypeKind.I8 or TypeKind.I16 or TypeKind.I32 or TypeKind.I64;
 
@@ -138,6 +140,9 @@ sealed class FunctionDecl
     public string Name = "";
     /// <summary>The signature part of a compound name ("i64_i64"), or null for a bare name.</summary>
     public string? Signature;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The name as declared, unsplit (a catalog function's name is a JSON
+    /// array of its schema path and name, which may contain a colon).</summary>
+    public string RawName = "";
 
     public string DisplayName => Signature == null ? Name : Name + ":" + Signature;
 }
@@ -299,6 +304,26 @@ sealed class ReadRel : Rel
     public Expr? Filter;
     public Expr? BestEffortFilter;
     public List<int>? Projection;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] For a table-function read (<c>fabricator.table_function</c>): the
+    /// arguments of the call, <see cref="TableNames"/> naming the function. Null for a table.</summary>
+    public List<Expr>? TableFunctionArgs;
+}
+
+/// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] A write to a named table (only INSERT is translated).</summary>
+sealed class WriteRel : Rel
+{
+    public List<string> TableNames = new();
+    /// <summary>The columns written, in the input's column order; the table's other columns take their defaults.</summary>
+    public List<string> ColumnNames = new();
+    public List<SType> ColumnTypes = new();
+    public int Op;
+    public int Output;
+    public int CreateMode;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The type URL of the rel's advanced-extension enhancement, which
+    /// gives it a meaning the spec does not define (<c>fabricator.merge</c>), and its value.</summary>
+    public string? Enhancement;
+    public string EnhancementValue = "";
+    public Rel Input = null!;
 }
 
 sealed class FilterRel : Rel
@@ -349,6 +374,8 @@ sealed class CrossRel : Rel
 {
     public Rel Left = null!;
     public Rel Right = null!;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] <c>fabricator.apply</c>: the right side is called per left row.</summary>
+    public bool Apply;
 }
 
 sealed class SetRel : Rel
@@ -364,6 +391,35 @@ sealed class TopNRel : Rel
     public Expr? Offset;
     public Expr? Count;
     public bool WithTies;
+}
+
+/// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] A window frame bound: its kind (a WindowBound_* field) and a row offset.</summary>
+sealed class WindowBound
+{
+    public int Kind;
+    public Expr? Offset;
+}
+
+/// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] A window function of a <see cref="WindowRel"/>.</summary>
+sealed class WindowCall
+{
+    public FunctionDecl Function = null!;
+    public List<FunctionArg> Args = new();
+    public List<FunctionOptionValue> Options = new();
+    public SType? OutputType;
+    public int Invocation;
+    public int BoundsType;
+    public WindowBound? Lower;
+    public WindowBound? Upper;
+}
+
+/// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] ConsistentPartitionWindowRel: the input's columns, then one per function.</summary>
+sealed class WindowRel : Rel
+{
+    public Rel Input = null!;
+    public List<WindowCall> Functions = new();
+    public List<Expr> Partitions = new();
+    public List<SortField> Sorts = new();
 }
 
 sealed class RootRel
