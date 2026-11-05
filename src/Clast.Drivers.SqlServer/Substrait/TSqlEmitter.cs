@@ -28,6 +28,13 @@ internal sealed class TSqlEmitter
     /// <summary>The collation used for functions asked to ignore case (and nothing else: accents, kana and width count).</summary>
     public const string CaseInsensitiveCollation = "Latin1_General_100_CI_AS_KS_WS_SC_UTF8";
 
+    /// <summary>
+    /// A collation aware of supplementary characters: under it LEN, SUBSTRING and LEFT count characters (code points),
+    /// where the binary collation counts UTF-16 code units. Used only for counting and cutting, never to compare: it is
+    /// linguistic, not binary.
+    /// </summary>
+    public const string CodePointCollation = "Latin1_General_100_CS_AS_SC_UTF8";
+
     /// <summary>Expressions longer than this are not repeated inline; the relation below becomes a derived table.</summary>
     private const int MaxInlineLength = 16 * 1024;
 
@@ -1035,6 +1042,12 @@ internal sealed class TSqlEmitter
 
     /// <summary>Gives a string value the query's collation (string literals and casts, which have none of their own).</summary>
     internal string Collate(string text) => _collation == null ? text : text + " COLLATE " + _collation;
+
+    /// <summary>
+    /// Gives a string computed under <see cref="CodePointCollation"/> back the collation it compares under: the query's,
+    /// or without one the database's (the value it was cut from may have had its own).
+    /// </summary>
+    internal string Recollate(string text) => text + " COLLATE " + (_collation ?? "DATABASE_DEFAULT");
 
     private SqlExpr FieldReference(FieldRefExpr fr, IReadOnlyList<SqlColumn> scope)
     {

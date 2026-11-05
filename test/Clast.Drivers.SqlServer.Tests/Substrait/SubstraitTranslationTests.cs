@@ -157,10 +157,11 @@ public class SubstraitTranslationTests
             P.Call(strpos, P.Field(2), P.Str("b")),
             P.Call(length, P.Field(2))), null, f);
         string sql = Sql(plan, collation: null);
-        // LEAST skips nulls, Substrait's least doesn't; LEN ignores trailing spaces.
+        // LEAST skips nulls, Substrait's least doesn't; LEN ignores trailing spaces; CHARINDEX and LEN count UTF-16
+        // code units, so positions and lengths are counted under a collation that counts characters.
         Assert.Contains("CASE WHEN [t0].[price] IS NULL THEN NULL ELSE LEAST([t0].[price], 1E0) END", sql);
-        Assert.Contains("CAST(CHARINDEX(N'b', [t0].[name]) AS bigint)", sql);
-        Assert.Contains("CAST(LEN(REPLACE([t0].[name], N' ', N'.')) AS bigint)", sql);
+        Assert.Contains("CAST(CASE WHEN CHARINDEX(N'b', [t0].[name]) = 0 THEN 0 ELSE LEN((LEFT([t0].[name], CHARINDEX(N'b', [t0].[name]) - 1)) COLLATE Latin1_General_100_CS_AS_SC_UTF8 + N'.') END AS bigint)", sql);
+        Assert.Contains("CAST(LEN(([t0].[name]) COLLATE Latin1_General_100_CS_AS_SC_UTF8 + N'.') - 1 AS bigint)", sql);
     }
 
     [Fact]

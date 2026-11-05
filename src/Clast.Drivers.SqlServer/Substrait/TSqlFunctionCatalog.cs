@@ -613,9 +613,12 @@ internal static class TSqlFunctionCatalog
             new TSqlFunctionVariant(["str_str"], caseSensitive), new TSqlFunctionVariant(["str_str"], caseInsensitive));
         Condition(StringUrn, "contains", "LIKE", "INFIX", c => $"({c.S(0)} LIKE {LikePattern(c, 1, "%", "%", escapeWildcards: true)})",
             new TSqlFunctionVariant(["str_str"], caseSensitive), new TSqlFunctionVariant(["str_str"], caseInsensitive));
-        // SUBSTRING counts positions before the first character, as LEFT_OF_BEGINNING does.
+        // SUBSTRING counts positions before the first character, as LEFT_OF_BEGINNING does. Under the code-point
+        // collation it counts characters, so a supplementary character is not split.
         Scalar(StringUrn, "substring", "SUBSTRING", "FUNCTION", Str,
-            c => c.Count >= 3 ? $"SUBSTRING({c.V(0)}, {c.V(1)}, {c.V(2)})" : $"SUBSTRING({c.V(0)}, {c.V(1)}, 2147483647)",
+            c => c.Emitter.Recollate(c.Count >= 3
+                ? $"SUBSTRING(({c.V(0)}) COLLATE {TSqlEmitter.CodePointCollation}, {c.V(1)}, {c.V(2)})"
+                : $"SUBSTRING(({c.V(0)}) COLLATE {TSqlEmitter.CodePointCollation}, {c.V(1)}, 2147483647)"),
             new TSqlFunctionVariant(["str_i32_i32", "str_i32"], ("negative_start", "LEFT_OF_BEGINNING")));
         Scalar(StringUrn, "strpos", "CHARINDEX", "FUNCTION", Long, StrPos,
             new TSqlFunctionVariant(["str_str"], caseSensitive), new TSqlFunctionVariant(["str_str"], caseInsensitive));
@@ -625,8 +628,10 @@ internal static class TSqlFunctionCatalog
         Scalar(StringUrn, "reverse", "REVERSE", "FUNCTION", Str, c => $"REVERSE({c.V(0)})", V("str"));
         Scalar(StringUrn, "lower", "LOWER", "FUNCTION", Str, c => $"LOWER({c.V(0)})", new TSqlFunctionVariant(["str"], ("char_set", "UTF8")));
         Scalar(StringUrn, "upper", "UPPER", "FUNCTION", Str, c => $"UPPER({c.V(0)})", new TSqlFunctionVariant(["str"], ("char_set", "UTF8")));
-        // LEN ignores trailing spaces; replacing spaces (with one character each) counts them.
-        Scalar(StringUrn, "char_length", "LEN", "FUNCTION", Long, c => $"CAST(LEN(REPLACE({c.V(0)}, N' ', N'.')) AS bigint)", V("str"));
+        // LEN ignores trailing spaces, so a character is appended (and taken off the count); under the code-point
+        // collation LEN counts characters, not UTF-16 code units.
+        Scalar(StringUrn, "char_length", "LEN", "FUNCTION", Long,
+            c => $"CAST(LEN(({c.V(0)}) COLLATE {TSqlEmitter.CodePointCollation} + N'.') - 1 AS bigint)", V("str"));
         Scalar(StringUrn, "octet_length", "DATALENGTH", "FUNCTION", Long, c => $"CAST(DATALENGTH({Utf8(c)}) AS bigint)", V("str"));
         Scalar(StringUrn, "bit_length", "DATALENGTH", "FUNCTION", Long, c => $"(CAST(DATALENGTH({Utf8(c)}) AS bigint) * 8)", V("str"));
         Scalar(StringUrn, "ltrim", "LTRIM", "FUNCTION", Str, c => $"LTRIM({c.V(0)}, {TrimCharacters(c)})", V("str_str"));
@@ -932,7 +937,10 @@ internal static class TSqlFunctionCatalog
 
     private static string StrPos(TSqlCall c)
     {
-        string position = $"CAST(CHARINDEX({c.S(1)}, {c.S(0)}) AS bigint)";
+        // CHARINDEX searches under the comparison's collation and may answer in UTF-16 code units; the characters
+        // before the match, counted under the code-point collation, give the position in characters.
+        string unit = $"CHARINDEX({c.S(1)}, {c.S(0)})";
+        string position = $"CAST(CASE WHEN {unit} = 0 THEN 0 ELSE LEN((LEFT({c.S(0)}, {unit} - 1)) COLLATE {TSqlEmitter.CodePointCollation} + N'.') END AS bigint)";
         if (c.StringLiteral(1) is { Length: > 0 })
         {
             return position;
