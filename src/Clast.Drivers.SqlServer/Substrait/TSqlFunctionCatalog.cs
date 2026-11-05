@@ -783,7 +783,7 @@ internal static class TSqlFunctionCatalog
     }
 
     /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Argument <paramref name="i"/>, a string as its exact key.</summary>
-    private static string K(TSqlCall c, int i) => c.T(i).IsStringLike ? TSqlEmitter.StringKey(c.V(i)) : TSqlEmitter.Comparable(c.T(i), c.V(i));
+    private static string K(TSqlCall c, int i) => c.T(i).IsStringLike && c.Emitter.ExactStrings ? TSqlEmitter.StringKey(c.V(i)) : TSqlEmitter.Comparable(c.T(i), c.V(i));
 
     /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Argument <paramref name="i"/> for an EQUALITY, a string as its equality
     /// key (cheaper than the order key <see cref="K"/>).</summary>

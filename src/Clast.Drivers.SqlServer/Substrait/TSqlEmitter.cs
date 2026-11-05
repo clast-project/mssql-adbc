@@ -68,6 +68,12 @@ internal sealed class TSqlEmitter
     /// <summary>The collation given to string values, or null.</summary>
     public string? Collation => _collation;
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Whether strings compare exactly (by the keys below). Only with a query
+    /// collation: without one the database's collations decide, as upstream documents, and no key overrides them.
+    /// </summary>
+    internal bool ExactStrings => _collation != null;
+
     /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The server takes IGNORE NULLS in window functions (SQL Server 2022+).</summary>
     public bool SupportsIgnoreNulls { get; init; } = true;
 
@@ -857,7 +863,7 @@ internal sealed class TSqlEmitter
             {
                 throw SubstraitTranslationException.Unsupported("Sorting by uuid values is not supported; SQL Server orders uniqueidentifier by its last bytes first.");
             }
-            string value = key.Type.IsStringLike ? StringKey(key.Value) : key.Value; // [FABRICATOR-PATCH: OURS-BY-DESIGN] exact string order
+            string value = key.Type.IsStringLike && ExactStrings ? StringKey(key.Value) : key.Value; // [FABRICATOR-PATCH: OURS-BY-DESIGN] exact string order
             bool nullable = MayBeNull(key);
             // SQL Server sorts nulls as the lowest values.
             switch (sort.Direction)
@@ -944,7 +950,7 @@ internal sealed class TSqlEmitter
         var rawKeys = groupingExpressions.Select(e => Render(e, block.Columns)).ToList();
         // [FABRICATOR-PATCH: OURS-BY-DESIGN] a string groups by its exact key and is read back from it
         var keys = rawKeys.Select(k => k.Type.IsStringLike ? new SqlExpr(EqualityKey(k.Value), null, k.Type, k.Props) : new SqlExpr(Comparable(k.Type, k.Value), null, k.Type, k.Props)).ToList();
-        string Out(SqlExpr key, string value) => key.Type.IsStringLike ? StringFromEqualityKey(value) : value;
+        string Out(SqlExpr key, string value) => key.Type.IsStringLike && ExactStrings ? StringFromEqualityKey(value) : value;
         var measures = measureList.Select(m => TSqlFunctionCatalog.WriteAggregate(this, m, block.Columns)).ToList();
 
         var output = new List<SqlColumn>(keys.Count + measures.Count + 1);
@@ -1942,6 +1948,10 @@ internal sealed class TSqlEmitter
     /// </summary>
     internal string EqualityKey(string value)
     {
+        if (!ExactStrings)
+        {
+            return value;
+        }
         if (_boundedStrings.TryGetValue(value, out var bound))
         {
             string guarded = $"CASE WHEN DATALENGTH({bound.Raw}) > {bound.Bytes.ToString(CultureInfo.InvariantCulture)} " +
@@ -2106,7 +2116,8 @@ internal sealed class TSqlEmitter
             TypeKind.I64 => ("bigint", long.MinValue, long.MaxValue),
             _ => null,
         };
-        if (integer is null && !strings)
+        // without exact strings the literal list keeps comparing under the database's collations
+        if (integer is null && !(strings && ExactStrings))
         {
             return null;
         }

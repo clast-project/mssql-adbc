@@ -154,7 +154,7 @@ public static class SqlServerSubstrait
     {
         if (collation.Length > 128 || !collation.All(ch => ch is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_'))
         {
-            throw new SubstraitTranslationException($"'{collation}' is not a collation name."); // [FABRICATOR-PATCH: OURS-BY-DESIGN] no ADBC
+            throw new Apache.Arrow.Adbc.AdbcException($"'{collation}' is not a collation name.", Apache.Arrow.Adbc.AdbcStatusCode.InvalidArgument);
         }
         return collation;
     }
