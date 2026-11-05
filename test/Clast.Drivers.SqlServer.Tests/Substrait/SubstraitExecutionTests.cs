@@ -151,6 +151,20 @@ public class SubstraitExecutionTests
     }
 
     [SkippableFact]
+    public void GroupingSetsKeepTheEmptySetsRowOverNoRows()
+    {
+        var f = new Functions();
+        int count = f.Add("functions_aggregate_generic", "count:");
+        int sum = f.Add("functions_arithmetic", "sum:i32");
+        int gt = f.Add("functions_comparison", "gt:any_any");
+        byte[] noRows = P.Filter(Orders, P.Call(gt, P.Field(4), P.I32(100)));
+        // ROLLUP (flag) over no rows: (flag) has no rows, () has its one, as over any input.
+        byte[] plan = P.Plan(P.AggregateSets(noRows, [P.Field(6)], [[0], []], P.Measure(count, []), P.Measure(sum, [P.Field(4)])),
+            ["flag", "n", "qty", "set"], f);
+        AssertRows(Run(plan), false, Row(null, 0L, null, 1L));
+    }
+
+    [SkippableFact]
     public void AggregatesFollowSubstraitResultRules()
     {
         var f = new Functions();

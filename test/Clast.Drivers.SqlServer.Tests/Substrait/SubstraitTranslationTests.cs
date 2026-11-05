@@ -48,6 +48,37 @@ public class SubstraitTranslationTests
     }
 
     [Fact]
+    public void GroupingSetsWithTheEmptySetKeepItsRowOverNoRows()
+    {
+        var f = new Functions();
+        int count = f.Add("functions_aggregate_generic", "count:");
+        int sum = f.Add("functions_arithmetic", "sum:i32");
+        byte[] plan = P.Plan(P.AggregateSets(Orders, [P.Field(6)], [[0], []], P.Measure(count, []), P.Measure(sum, [P.Field(4)])),
+            ["flag", "n", "qty", "set"], f);
+        // SQL Server gives GROUPING SETS no row at all over an empty input; the join from one row restores the
+        // empty set's (n 0, set 1), and passes the grouped rows through otherwise.
+        Assert.Equal(
+            "SELECT [t1].[flag] AS [flag], COALESCE([t1].[_a0], 0) AS [n], [t1].[_a1] AS [qty], COALESCE([t1].[_a2], 1) AS [set]\n" +
+            "FROM (SELECT 1 AS [one]) AS [t2] LEFT JOIN (\n" +
+            "SELECT [t0].[flag] AS [flag], COUNT_BIG(*) AS [_a0], SUM(CAST([t0].[qty] AS bigint)) AS [_a1], CAST(CASE GROUPING_ID([t0].[flag]) WHEN 0 THEN 0 WHEN 1 THEN 1 END AS int) AS [_a2]\n" +
+            "FROM [orders] AS [t0]\n" +
+            "GROUP BY GROUPING SETS (([t0].[flag]), ())\n" +
+            ") AS [t1] ON 1 = 1",
+            Sql(plan));
+    }
+
+    [Fact]
+    public void GroupingSetsWithTheEmptySetRejectANeverNullMeasureOtherThanACount()
+    {
+        var f = new Functions();
+        int max = f.Add("functions_arithmetic", "max:i32");
+        byte[] required = P.LenDel(5, P.LenDel(5, P.VarField(2, 2)));
+        byte[] plan = P.Plan(P.AggregateSets(Orders, [P.Field(6)], [[0], []], P.Measure(max, [P.Field(4)], extra: required)),
+            ["flag", "m", "set"], f);
+        Assert.Contains("over no rows", Rejection(plan));
+    }
+
+    [Fact]
     public void FilterOverALimitUsesADerivedTable()
     {
         var f = new Functions();

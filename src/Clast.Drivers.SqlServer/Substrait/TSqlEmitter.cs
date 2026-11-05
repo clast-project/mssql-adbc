@@ -544,7 +544,49 @@ internal sealed class TSqlEmitter
         output.AddRange(measures.Select(m => new SqlColumn(NewName("_a"), m, isBare: false)));
         block.Columns = output;
         block.Aggregated = true;
-        return block;
+        int emptySet = sets.Count > 1 ? sets.FindIndex(set => set.Count == 0) : -1;
+        return emptySet < 0 ? block : WithGrandTotalOnEmptyInput(block, keys.Count, measureList, emptySet);
+    }
+
+    /// <summary>
+    /// Grouping sets that include the empty set, over an input that may be empty. The empty set has one row even
+    /// then: null keys, each measure over no rows (a COUNT of 0). SQL Server returns no row at all for GROUPING SETS,
+    /// ROLLUP or CUBE over an empty input, and that row would be lost (measured). Selecting the grouped rows through a
+    /// LEFT JOIN from one constant row restores it without reading the input again: the join passes every grouped row
+    /// through, and when there is none it yields one null row, in which the count measures become 0 and the set index
+    /// that of the empty set.
+    /// </summary>
+    private SelectBlock WithGrandTotalOnEmptyInput(SelectBlock block, int keyCount, List<Measure> measures, int emptySet)
+    {
+        var grouped = Wrap(block, keepOrder: false);
+        var columns = new List<SqlColumn>(grouped.Columns.Count);
+        for (int i = 0; i < grouped.Columns.Count; i++)
+        {
+            var column = grouped.Columns[i];
+            string? total = null;
+            if (i == grouped.Columns.Count - 1)
+            {
+                total = emptySet.ToString(CultureInfo.InvariantCulture);
+            }
+            else if (i >= keyCount && !column.Expr.Type.Nullable)
+            {
+                // A measure that is never null has a value over no rows; the catalog's are the counts.
+                var function = measures[i - keyCount].Call.Function;
+                if (function.Name is not ("count" or "approx_count_distinct"))
+                {
+                    throw SubstraitTranslationException.Unsupported($"{function.DisplayName}: its value over no rows is not known, which grouping sets with the empty set need.");
+                }
+                total = "0";
+            }
+            columns.Add(total == null
+                ? column
+                : new SqlColumn(column.Name, SqlExpr.Of($"COALESCE({column.Expr.Value}, {total})", column.Expr.Type, SqlProps.Column), isBare: false));
+        }
+        return new SelectBlock
+        {
+            From = $"(SELECT 1 AS [one]) AS {NewAlias()} LEFT JOIN {grouped.From} ON 1 = 1",
+            Columns = columns,
+        };
     }
 
     /// <summary>A grouping key keeps the name of the column it groups by.</summary>

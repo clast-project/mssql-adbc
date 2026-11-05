@@ -1,3 +1,6 @@
-SELECT [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 AS [name], CAST(CASE GROUPING_ID([t0].[name] COLLATE Latin1_General_100_BIN2_UTF8) WHEN 0 THEN 0 WHEN 1 THEN 1 END AS int) AS [n]
+SELECT [t1].[name] AS [name], COALESCE([t1].[_a1], 1) AS [n]
+FROM (SELECT 1 AS [one]) AS [t2] LEFT JOIN (
+SELECT [t0].[name] COLLATE Latin1_General_100_BIN2_UTF8 AS [name], COUNT_BIG(CAST(1 AS bigint)) AS [_a0], CAST(CASE GROUPING_ID([t0].[name] COLLATE Latin1_General_100_BIN2_UTF8) WHEN 0 THEN 0 WHEN 1 THEN 1 END AS int) AS [_a1]
 FROM [orders] AS [t0]
 GROUP BY GROUPING SETS (([t0].[name] COLLATE Latin1_General_100_BIN2_UTF8), ())
+) AS [t1] ON 1 = 1
