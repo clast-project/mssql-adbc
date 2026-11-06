@@ -66,7 +66,12 @@ Notable mappings:
   meaning. An outer join's null-supplying input with computed columns is a
   derived table, so those columns are null for a missing row.
 - **Aggregates.** Grouping sets are `GROUPING SETS`, with the set index column
-  from `GROUPING_ID`. A measure's filter passes null for excluded rows
+  from `GROUPING_ID`. SQL Server returns no row at all for `GROUPING SETS`
+  over an empty input, so when the empty set is among them the grouped rows
+  are selected through a `LEFT JOIN` from one constant row: over no rows that
+  gives the empty set's row (null keys, a `COUNT` of 0). A measure that is
+  never null other than a count is rejected there, since its value over no
+  rows is not known. A measure's filter passes null for excluded rows
   (`SUM(CASE WHEN f THEN x END)`), which aggregates skip. Grouping by a
   constant or a subquery computes the keys in a derived table first.
 - **Set operations.** UNION, EXCEPT and INTERSECT, with the ALL variants

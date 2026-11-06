@@ -1,3 +1,6 @@
-SELECT COUNT_BIG(CAST(1 AS bigint)) AS [customer_id], CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) AS [flag], CASE WHEN CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) IN (1) THEN [t0].[customer_id] END AS [n]
+SELECT COALESCE([t1].[_a0], 0) AS [customer_id], COALESCE([t1].[_a1], 0) AS [flag], [t1].[customer_id] AS [n]
+FROM (SELECT 1 AS [one]) AS [t2] LEFT JOIN (
+SELECT CASE WHEN CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) IN (1) THEN [t0].[customer_id] END AS [customer_id], CASE WHEN CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) IN (2) THEN [t0].[flag] END AS [flag], CASE WHEN CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) IN (3) THEN [t0].[customer_id] END AS [customer_id_2], CASE WHEN CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) IN (3) THEN [t0].[flag] END AS [flag_3], COUNT_BIG(CAST(1 AS bigint)) AS [_a0], CAST(CASE GROUPING_ID([t0].[customer_id], [t0].[flag]) WHEN 3 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 0 THEN 3 END AS int) AS [_a1]
 FROM [orders] AS [t0]
 GROUP BY GROUPING SETS ((), ([t0].[customer_id]), ([t0].[flag]), ([t0].[customer_id], [t0].[flag]))
+) AS [t1] ON 1 = 1

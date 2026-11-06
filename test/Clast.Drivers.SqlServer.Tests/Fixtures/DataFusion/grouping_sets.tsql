@@ -1,3 +1,6 @@
-SELECT [t0].[customer_id] AS [customer_id], (CAST([t0].[qty] AS bigint) % CAST(2 AS bigint)) AS [parity], CAST(CASE GROUPING_ID([t0].[customer_id], (CAST([t0].[qty] AS bigint) % CAST(2 AS bigint))) WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 3 THEN 2 END AS int) AS [n]
+SELECT [t1].[customer_id] AS [customer_id], [t1].[_g0] AS [parity], COALESCE([t1].[_a2], 2) AS [n]
+FROM (SELECT 1 AS [one]) AS [t2] LEFT JOIN (
+SELECT [t0].[customer_id] AS [customer_id], (CAST([t0].[qty] AS bigint) % CAST(2 AS bigint)) AS [_g0], COUNT_BIG(CAST(1 AS bigint)) AS [_a1], CAST(CASE GROUPING_ID([t0].[customer_id], (CAST([t0].[qty] AS bigint) % CAST(2 AS bigint))) WHEN 1 THEN 0 WHEN 2 THEN 1 WHEN 3 THEN 2 END AS int) AS [_a2]
 FROM [orders] AS [t0]
 GROUP BY GROUPING SETS (([t0].[customer_id]), ((CAST([t0].[qty] AS bigint) % CAST(2 AS bigint))), ())
+) AS [t1] ON 1 = 1
