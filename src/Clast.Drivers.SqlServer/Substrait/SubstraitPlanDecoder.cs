@@ -49,7 +49,7 @@ sealed class SubstraitPlanDecoder
                 case F.Plan_ExtensionUris: ReadUrn(r.ReadMessage(wire), _uris); break;
                 case F.Plan_ExtensionDeclarations: ReadExtensionDeclaration(r.ReadMessage(wire)); break;
                 case F.Plan_Relations: relations.Add(r.ReadSlice(wire)); break;
-                case F.Plan_AdvancedExtensions: CheckAdvancedExtension(r.ReadMessage(wire), "Plan"); break;
+                case F.Plan_AdvancedExtensions: ReadPlanExtension(r.ReadMessage(wire)); break;
                 case F.Plan_ExecutionBehavior: ReadExecutionBehavior(r.ReadMessage(wire)); break;
                 default: r.Skip(wire); break;
             }
@@ -157,7 +157,7 @@ sealed class SubstraitPlanDecoder
             if (name == null)
                 throw SubstraitTranslationException.MalformedPlan($"Extension function (anchor={anchor}) has no name.");
 
-            var decl = new FunctionDecl();
+            var decl = new FunctionDecl { RawName = name };
             int colon = name.IndexOf(':');
             if (colon >= 0)
             {
@@ -208,6 +208,61 @@ sealed class SubstraitPlanDecoder
     /// Optimizations may be ignored, but an enhancement changes the semantics of
     /// the message it is attached to, so it cannot be.
     /// </summary>
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The type URLs of the plan's optimization hints.</summary>
+    public HashSet<string> PlanOptimizations { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] The plan's advanced extension: optimization hints are recorded (a consumer may
+    /// act on one it knows); an enhancement changes the plan's meaning and is refused.
+    /// </summary>
+    void ReadPlanExtension(ProtoReader r)
+    {
+        while (r.Next(out int field, out int wire))
+        {
+            if (field == F.AdvancedExtension_Enhancement)
+                throw SubstraitTranslationException.Unsupported("Plan carries an advanced extension enhancement, which changes its semantics.");
+            if (field != F.AdvancedExtension_Optimization)
+            {
+                r.Skip(wire);
+                continue;
+            }
+            var any = r.ReadMessage(wire);
+            while (any.Next(out int af, out int aw))
+            {
+                if (af == F.Any_TypeUrl) PlanOptimizations.Add(any.ReadString(aw));
+                else any.Skip(aw);
+            }
+        }
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A CrossRel's advanced extension: <c>fabricator.apply</c> makes it an APPLY
+    /// (true); any other enhancement changes its meaning in a way this consumer does not know.
+    /// </summary>
+    static bool ReadCrossEnhancement(ProtoReader r)
+    {
+        bool apply = false;
+        while (r.Next(out int field, out int wire))
+        {
+            if (field != F.AdvancedExtension_Enhancement)
+            {
+                r.Skip(wire);
+                continue;
+            }
+            var any = r.ReadMessage(wire);
+            string? typeUrl = null;
+            while (any.Next(out int af, out int aw))
+            {
+                if (af == F.Any_TypeUrl) typeUrl = any.ReadString(aw);
+                else any.Skip(aw);
+            }
+            if (typeUrl != F.Enhancement_FabricatorApply)
+                throw SubstraitTranslationException.Unsupported($"CrossRel carries the enhancement '{typeUrl}', which changes its semantics.");
+            apply = true;
+        }
+        return apply;
+    }
+
     static void CheckAdvancedExtension(ProtoReader r, string owner)
     {
         while (r.Next(out int field, out int wire))
@@ -259,6 +314,8 @@ sealed class SubstraitPlanDecoder
                 case F.Rel_Set: rel = ReadSetRel(r.ReadMessage(wire)); break;
                 case F.Rel_Cross: rel = ReadCrossRel(r.ReadMessage(wire)); break;
                 case F.Rel_TopN: rel = ReadTopNRel(r.ReadMessage(wire)); break;
+                case F.Rel_Window: rel = ReadWindowRel(r.ReadMessage(wire)); break; // [FABRICATOR-PATCH: OURS-BY-DESIGN] window functions
+                case F.Rel_Write: rel = ReadWriteRel(r.ReadMessage(wire)); break; // [FABRICATOR-PATCH: OURS-BY-DESIGN] INSERT … SELECT
                 default: throw SubstraitTranslationException.UnsupportedRelation(field);
             }
         }
@@ -301,6 +358,120 @@ sealed class SubstraitPlanDecoder
         return emit;
     }
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A WriteRel: the target named table, the columns written
+    /// (<c>table_schema</c>, matched by the input's columns in order), the operation and the output mode.
+    /// </summary>
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A WriteRel's advanced extension: the one enhancement understood is
+    /// <c>fabricator.merge</c> (the host's MERGE, see TSqlEmitter.EmitMerge); any other changes the rel's meaning in
+    /// a way this consumer does not know, so the plan is refused.
+    /// </summary>
+    static void ReadWriteEnhancement(ProtoReader r, WriteRel rel)
+    {
+        while (r.Next(out int field, out int wire))
+        {
+            if (field != F.AdvancedExtension_Enhancement)
+            {
+                r.Skip(wire);
+                continue;
+            }
+            var any = r.ReadMessage(wire);
+            string? typeUrl = null;
+            string value = "";
+            while (any.Next(out int af, out int aw))
+            {
+                if (af == F.Any_TypeUrl) typeUrl = any.ReadString(aw);
+                else if (af == F.Any_Value) value = System.Text.Encoding.UTF8.GetString(any.ReadBytes(aw));
+                else any.Skip(aw);
+            }
+            if (typeUrl != F.Enhancement_FabricatorMerge)
+                throw SubstraitTranslationException.Unsupported($"WriteRel carries the enhancement '{typeUrl}', which changes its semantics.");
+            rel.Enhancement = typeUrl;
+            rel.EnhancementValue = value;
+        }
+    }
+
+    WriteRel ReadWriteRel(ProtoReader r)
+    {
+        var rel = new WriteRel();
+        var schema = new ReadRel();
+        bool hasSchema = false;
+        Rel? input = null;
+        while (r.Next(out int field, out int wire))
+        {
+            switch (field)
+            {
+                case F.WriteRel_NamedTable:
+                {
+                    var nr = r.ReadMessage(wire);
+                    while (nr.Next(out int nf, out int nw))
+                    {
+                        if (nf == F.NamedTable_Names) rel.TableNames.Add(nr.ReadString(nw));
+                        else if (nf == F.NamedTable_AdvancedExtension) CheckAdvancedExtension(nr.ReadMessage(nw), "NamedObjectWrite");
+                        else throw SubstraitTranslationException.UnexpectedField("NamedObjectWrite", nf);
+                    }
+                    break;
+                }
+                case F.WriteRel_ExtensionTable:
+                    throw SubstraitTranslationException.Unsupported("WriteRel extension_table is not supported; only named tables can be written.");
+                case F.WriteRel_TableSchema: ReadNamedStruct(r.ReadMessage(wire), schema); hasSchema = true; break;
+                case F.WriteRel_Op: rel.Op = r.ReadInt32(wire); break;
+                case F.WriteRel_Input: input = ReadRel(r.ReadMessage(wire)); break;
+                case F.WriteRel_Output: rel.Output = r.ReadInt32(wire); break;
+                case F.WriteRel_Common: rel.Emit = ReadRelCommon(r.ReadMessage(wire), "WriteRel"); break;
+                case F.WriteRel_CreateMode: rel.CreateMode = r.ReadInt32(wire); break;
+                case F.WriteRel_AdvancedExtension: ReadWriteEnhancement(r.ReadMessage(wire), rel); break;
+                default: throw SubstraitTranslationException.UnexpectedField("WriteRel", field);
+            }
+        }
+        if (rel.TableNames.Count == 0)
+            throw SubstraitTranslationException.MalformedPlan("WriteRel has no named_table.");
+        if (!hasSchema)
+            throw SubstraitTranslationException.MalformedPlan("WriteRel has no table_schema.");
+        rel.ColumnNames = schema.ColumnNames;
+        rel.ColumnTypes = schema.ColumnTypes;
+        rel.Input = input ?? throw SubstraitTranslationException.MalformedPlan("WriteRel missing input.");
+        return rel;
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A ReadRel's advanced extension: <c>fabricator.table_function</c> makes it a
+    /// call of the named table function, its value a struct of the argument expressions (returned); any other
+    /// enhancement changes its meaning in a way this consumer does not know. Null without an enhancement.
+    /// </summary>
+    List<Expr>? ReadReadEnhancement(ProtoReader r)
+    {
+        List<Expr>? args = null;
+        while (r.Next(out int field, out int wire))
+        {
+            if (field != F.AdvancedExtension_Enhancement)
+            {
+                r.Skip(wire);
+                continue;
+            }
+            var any = r.ReadMessage(wire);
+            string? typeUrl = null;
+            byte[] value = Array.Empty<byte>();
+            while (any.Next(out int af, out int aw))
+            {
+                if (af == F.Any_TypeUrl) typeUrl = any.ReadString(aw);
+                else if (af == F.Any_Value) value = any.ReadBytes(aw);
+                else any.Skip(aw);
+            }
+            if (typeUrl != F.Enhancement_FabricatorTableFunction)
+                throw SubstraitTranslationException.Unsupported($"ReadRel carries the enhancement '{typeUrl}', which changes its semantics.");
+            args = new List<Expr>();
+            var fields = new ProtoReader(value, 0, value.Length);
+            while (fields.Next(out int sf, out int sw))
+            {
+                if (sf == 1) args.Add(ReadExpression(fields.ReadMessage(sw))); // Expression.Nested.Struct.fields
+                else fields.Skip(sw);
+            }
+        }
+        return args;
+    }
+
     ReadRel ReadReadRel(ProtoReader r)
     {
         var rel = new ReadRel();
@@ -315,7 +486,7 @@ sealed class SubstraitPlanDecoder
                 case F.ReadRel_BestEffortFilter: rel.BestEffortFilter = ReadExpression(r.ReadMessage(wire)); break;
                 case F.ReadRel_Projection: rel.Projection = ReadMaskExpression(r.ReadMessage(wire)); break;
                 case F.ReadRel_NamedTable: ReadNamedTable(r.ReadMessage(wire), rel); hasTable = true; break;
-                case F.Rel_AdvancedExtension: CheckAdvancedExtension(r.ReadMessage(wire), "ReadRel"); break;
+                case F.Rel_AdvancedExtension: rel.TableFunctionArgs ??= ReadReadEnhancement(r.ReadMessage(wire)); break;
                 case F.ReadRel_VirtualTable: rel.VirtualRows = ReadVirtualTable(r.ReadMessage(wire)); hasTable = true; break;
                 case F.ReadRel_LocalFiles:
                 case F.ReadRel_ExtensionTable:
@@ -329,6 +500,12 @@ sealed class SubstraitPlanDecoder
             throw SubstraitTranslationException.MalformedPlan("ReadRel has no named_table or virtual_table.");
         if (!hasSchema)
             throw SubstraitTranslationException.MalformedPlan("ReadRel has no base_schema.");
+        if (rel.TableFunctionArgs != null)
+        {
+            if (rel.TableNames.Count == 0 || rel.VirtualRows != null)
+                throw SubstraitTranslationException.MalformedPlan("A table-function ReadRel must name the function.");
+            return rel;
+        }
         if (rel.VirtualRows != null && rel.VirtualRows.Any(row => row.Count != rel.ColumnNames.Count))
             throw SubstraitTranslationException.MalformedPlan("A virtual table row does not have one value per base_schema column.");
         return rel;
@@ -565,6 +742,96 @@ sealed class SubstraitPlanDecoder
         return sf;
     }
 
+    // [FABRICATOR-PATCH: OURS-BY-DESIGN] ConsistentPartitionWindowRel
+    WindowRel ReadWindowRel(ProtoReader r)
+    {
+        var rel = new WindowRel();
+        Rel? input = null;
+        while (r.Next(out int field, out int wire))
+        {
+            switch (field)
+            {
+                case F.WindowRel_Common: rel.Emit = ReadRelCommon(r.ReadMessage(wire), "ConsistentPartitionWindowRel"); break;
+                case F.WindowRel_Input: input = ReadRel(r.ReadMessage(wire)); break;
+                case F.WindowRel_WindowFunctions: rel.Functions.Add(ReadWindowCall(r.ReadMessage(wire))); break;
+                case F.WindowRel_PartitionExpressions: rel.Partitions.Add(ReadExpression(r.ReadMessage(wire))); break;
+                case F.WindowRel_Sorts: rel.Sorts.Add(ReadSortField(r.ReadMessage(wire))); break;
+                case F.Rel_AdvancedExtension: CheckAdvancedExtension(r.ReadMessage(wire), "ConsistentPartitionWindowRel"); break;
+                default: throw SubstraitTranslationException.UnexpectedField("ConsistentPartitionWindowRel", field);
+            }
+        }
+        rel.Input = input ?? throw SubstraitTranslationException.MalformedPlan("ConsistentPartitionWindowRel missing input.");
+        if (rel.Functions.Count == 0)
+            throw SubstraitTranslationException.MalformedPlan("ConsistentPartitionWindowRel has no window functions.");
+        return rel;
+    }
+
+    WindowCall ReadWindowCall(ProtoReader r)
+    {
+        var call = new WindowCall();
+        uint functionRef = 0;
+        while (r.Next(out int field, out int wire))
+        {
+            switch (field)
+            {
+                case F.WindowRelFunction_FunctionReference: functionRef = r.ReadUInt32(wire); break;
+                case F.WindowRelFunction_Arguments: call.Args.Add(ReadFunctionArgument(r.ReadMessage(wire))); break;
+                case F.WindowRelFunction_Options: call.Options.Add(ReadFunctionOption(r.ReadMessage(wire))); break;
+                case F.WindowRelFunction_OutputType: call.OutputType = ReadType(r.ReadMessage(wire)); break;
+                case F.WindowRelFunction_Invocation: call.Invocation = r.ReadInt32(wire); break;
+                case F.WindowRelFunction_BoundsType: call.BoundsType = r.ReadInt32(wire); break;
+                case F.WindowRelFunction_LowerBound: call.Lower = ReadWindowBound(r.ReadMessage(wire)); break;
+                case F.WindowRelFunction_UpperBound: call.Upper = ReadWindowBound(r.ReadMessage(wire)); break;
+                case F.WindowRelFunction_Phase:
+                {
+                    int phase = r.ReadInt32(wire);
+                    if (phase is not (F.AggregationPhase_Unspecified or F.AggregationPhase_InitialToResult))
+                        throw SubstraitTranslationException.Unsupported($"Aggregation phase {phase} is not supported; only INITIAL_TO_RESULT can be translated.");
+                    break;
+                }
+                default: throw SubstraitTranslationException.UnexpectedField("WindowRelFunction", field);
+            }
+        }
+        call.Function = ResolveFunction(functionRef);
+        return call;
+    }
+
+    WindowBound ReadWindowBound(ProtoReader r)
+    {
+        var bound = new WindowBound();
+        while (r.Next(out int field, out int wire))
+        {
+            switch (field)
+            {
+                case F.WindowBound_Preceding:
+                case F.WindowBound_Following:
+                {
+                    bound.Kind = field;
+                    var offset = r.ReadMessage(wire);
+                    while (offset.Next(out int of, out int ow))
+                    {
+                        switch (of)
+                        {
+                            case F.WindowBoundOffset_Offset: bound.Offset ??= Int64Literal(offset.ReadInt64(ow)); break;
+                            case F.WindowBoundOffset_OffsetExpr: bound.Offset = ReadExpression(offset.ReadMessage(ow)); break;
+                            default: throw SubstraitTranslationException.UnexpectedField("WindowFunction.Bound offset", of);
+                        }
+                    }
+                    break;
+                }
+                case F.WindowBound_CurrentRow:
+                case F.WindowBound_Unbounded:
+                    bound.Kind = field;
+                    r.ReadMessage(wire);
+                    break;
+                default: throw SubstraitTranslationException.UnexpectedField("WindowFunction.Bound", field);
+            }
+        }
+        if (bound.Kind == 0)
+            throw SubstraitTranslationException.MalformedPlan("A window bound has no kind.");
+        return bound;
+    }
+
     AggregateRel ReadAggregateRel(ProtoReader r)
     {
         var rel = new AggregateRel();
@@ -729,7 +996,7 @@ sealed class SubstraitPlanDecoder
                 case F.CrossRel_Common: rel.Emit = ReadRelCommon(r.ReadMessage(wire), "CrossRel"); break;
                 case F.CrossRel_Left: left = ReadRel(r.ReadMessage(wire)); break;
                 case F.CrossRel_Right: right = ReadRel(r.ReadMessage(wire)); break;
-                case F.Rel_AdvancedExtension: CheckAdvancedExtension(r.ReadMessage(wire), "CrossRel"); break;
+                case F.Rel_AdvancedExtension: rel.Apply = ReadCrossEnhancement(r.ReadMessage(wire)); break;
                 default: throw SubstraitTranslationException.UnexpectedField("CrossRel", field);
             }
         }

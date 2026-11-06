@@ -25,6 +25,13 @@ internal sealed class TSqlEmitter
     /// <summary>The collation closest to Substrait's string semantics: binary and case-sensitive, by UTF-16 code unit.</summary>
     public const string BinaryCollation = "Latin1_General_100_BIN2_UTF8";
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A supplementary-character-aware collation: under it LEN, SUBSTRING and LEFT
+    /// count code points (as DuckDB does), where the binary collation counts UTF-16 code units. Used ONLY for
+    /// counting and cutting, never to compare — it is linguistic, not binary.
+    /// </summary>
+    public const string CodePointCollation = "Latin1_General_100_CS_AS_SC_UTF8";
+
     /// <summary>The collation used for functions asked to ignore case (and nothing else: accents, kana and width count).</summary>
     public const string CaseInsensitiveCollation = "Latin1_General_100_CI_AS_KS_WS_SC_UTF8";
 
@@ -34,6 +41,10 @@ internal sealed class TSqlEmitter
     private readonly bool _perRecordEvaluation;
     private readonly string? _collation;
     private readonly Func<IReadOnlyList<string>, string>? _tableName;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Every named-table read, with its alias — a DELETE / UPDATE finds
+    /// its target's row in the input by it.</summary>
+    private readonly List<(IReadOnlyList<string> Names, string From)> _reads = new();
+    private readonly Func<IReadOnlyList<string>, IReadOnlyDictionary<string, string>?>? _columnSqlTypes;
     private readonly List<IReadOnlyList<SqlColumn>> _outerScopes = new();
     private int _aliasCounter;
     private int _nameCounter;
@@ -41,15 +52,73 @@ internal sealed class TSqlEmitter
     /// <param name="perRecordEvaluation">The plan asks for execution context variables to be evaluated per record.</param>
     /// <param name="collation">The collation given to every string value, or null to use the database's collations.</param>
     /// <param name="tableName">Writes a named table's name, in place of its quoted name parts.</param>
-    public TSqlEmitter(bool perRecordEvaluation, string? collation, Func<IReadOnlyList<string>, string>? tableName = null)
+    /// <param name="columnSqlTypes">
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] For a named table, its columns whose server type takes no COLLATE
+    /// (xml, json, text, ntext, sql_variant, CLR types), keyed by column name with the type name as value.
+    /// </param>
+    public TSqlEmitter(bool perRecordEvaluation, string? collation, Func<IReadOnlyList<string>, string>? tableName = null,
+                       Func<IReadOnlyList<string>, IReadOnlyDictionary<string, string>?>? columnSqlTypes = null)
     {
         _perRecordEvaluation = perRecordEvaluation;
         _collation = collation;
         _tableName = tableName;
+        _columnSqlTypes = columnSqlTypes;
     }
 
     /// <summary>The collation given to string values, or null.</summary>
     public string? Collation => _collation;
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Whether strings compare exactly (by the keys below). Only with a query
+    /// collation: without one the database's collations decide, as upstream documents, and no key overrides them.
+    /// </summary>
+    internal bool ExactStrings => _collation != null;
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The server takes IGNORE NULLS in window functions (SQL Server 2022+).</summary>
+    public bool SupportsIgnoreNulls { get; init; } = true;
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The server has DATETRUNC (SQL Server 2022+).</summary>
+    public bool SupportsDateTrunc { get; init; } = true;
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] LTRIM / RTRIM take the characters to remove (SQL Server 2022+).</summary>
+    public bool SupportsTrimCharacters { get; init; } = true;
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The server has OPENJSON (compatibility level 130+, Fabric).</summary>
+    public bool SupportsOpenJson { get; init; } = true;
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] An IN list of more integer or string constants than this goes as one
+    /// JSON array read by OPENJSON (see <see cref="OpenJsonList"/>).</summary>
+    internal const int JsonListThreshold = 50;
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A single join takes any one of several matching rows instead of failing
+    /// (DuckDB's scalar_subquery_error_on_multiple_rows = false; the plan says so).
+    /// </summary>
+    public bool SingleJoinAnyRow { get; init; }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A function of the attached catalog (its schema path and name) as the T-SQL
+    /// name to call it by, e.g. <c>[dbo].[f]</c> — or null when it does not run on the server (a function the provider
+    /// implements itself). Unset: every catalog function is refused.
+    /// </summary>
+    public Func<IReadOnlyList<string>, string?>? CatalogFunctions { get; init; }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A table function of the attached catalog (its schema path and name) as the
+    /// T-SQL name to call it by in a FROM clause, or null when it does not run on the server. Unset: refused.
+    /// </summary>
+    public Func<IReadOnlyList<string>, string?>? CatalogTableFunctions { get; init; }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] For a table (or table function) by its names: the declared byte length of each
+    /// string column short enough for the bounded equality key (see <see cref="EqualityKey"/>) and whether it is
+    /// nvarchar/nchar; null when unknown.
+    /// </summary>
+    public Func<IReadOnlyList<string>, IReadOnlyDictionary<string, (int Bytes, bool Unicode)>?>? ColumnByteLengths { get; init; }
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Rendered string columns with a known declared length: the column
+    /// reference without collation, its length in bytes and whether it is nvarchar/nchar.</summary>
+    private readonly Dictionary<string, (string Raw, int Bytes, bool Unicode)> _boundedStrings = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Writes the query. With <paramref name="nested"/>, the query is meant
@@ -82,6 +151,290 @@ internal sealed class TSqlEmitter
         return Render(block, SelectList(block, names), keepOrder: !nested);
     }
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Writes the query for the remote pushdown: the result columns are
+    /// named <c>c0</c>…<c>cN</c> (the host casts them to DuckDB's own types and names), and the final ORDER BY
+    /// items are selected too, as <c>k0</c>…<c>kM</c>, so the host can sort by them again — a pushed result
+    /// reaches the user through a subquery, which keeps no order. <paramref name="orderDescending"/> gives
+    /// each key's direction; SQL Server sorts nulls as the lowest values, which the host must do as well.
+    /// </summary>
+    public string EmitPushdown(RootRel root, out int columnCount, out List<bool> orderDescending)
+    {
+        var block = EmitRel(root.Input);
+        if (block.Columns.Count == 0)
+        {
+            throw SubstraitTranslationException.Unsupported("The plan's result has no columns.");
+        }
+        if (root.Names != null && root.Names.Count > 0 && root.Names.Count != block.Columns.Count)
+        {
+            throw SubstraitTranslationException.MalformedPlan($"RelRoot has {root.Names.Count} names but its input has {block.Columns.Count} columns.");
+        }
+        columnCount = block.Columns.Count;
+        var items = SelectList(block, Enumerable.Range(0, columnCount).Select(i => "c" + i.ToString(CultureInfo.InvariantCulture)).ToList());
+        orderDescending = new List<bool>();
+        for (int i = 0; i < block.OrderBy.Count; i++)
+        {
+            items.Add((block.OrderBy[i].Sql, "k" + i.ToString(CultureInfo.InvariantCulture)));
+            orderDescending.Add(block.OrderBy[i].Descending);
+        }
+        return Render(block, items, keepOrder: true);
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Writes a WriteRel DELETE / UPDATE whose input is the query over the target
+    /// that DuckDB evaluates (the host builds it: DELETE <c>SELECT 1 FROM target … WHERE …</c>, UPDATE <c>SELECT
+    /// &lt;new value&gt;, … FROM target WHERE …</c>, the new values in the order of the WriteRel's columns):
+    /// <c>DELETE [t0] FROM &lt;from&gt; WHERE …</c> / <c>UPDATE [t0] SET [c] = &lt;value&gt;, … FROM &lt;from&gt; WHERE …</c>,
+    /// where [t0] is the target's row in that query. Refused when the target is read anywhere but once at the top
+    /// of the query's FROM (a derived table, a self-join), when the query groups, deduplicates, limits or windows,
+    /// and — UPDATE — when the FROM holds anything besides the target.
+    /// </summary>
+    public string EmitDeleteOrUpdate(WriteRel write)
+    {
+        bool update = write.Op == F.WriteOp_Update;
+        if (!update && write.Op != F.WriteOp_Delete)
+        {
+            throw SubstraitTranslationException.Unsupported($"WriteRel operation {write.Op}.");
+        }
+        if (write.Output == F.WriteOutput_ModifiedRecords || write.Emit != null)
+        {
+            throw SubstraitTranslationException.Unsupported("WriteRel output of the modified records (RETURNING).");
+        }
+        var block = DmlTarget(write, out string alias, out string targetRead, out string where);
+        if (!update)
+        {
+            return "DELETE " + alias + "\nFROM " + block.From + where;
+        }
+        if (block.From != targetRead)
+        {
+            throw SubstraitTranslationException.Unsupported("an UPDATE joined with another table.");
+        }
+        if (block.Columns.Count != write.ColumnNames.Count || write.ColumnNames.Count == 0)
+        {
+            throw SubstraitTranslationException.MalformedPlan($"WriteRel assigns {write.ColumnNames.Count} columns but its input has {block.Columns.Count}.");
+        }
+        var assignments = write.ColumnNames.Select((c, i) => TSql.Identifier(c) + " = " + block.Columns[i].Expr.Value);
+        return "UPDATE " + alias + " SET " + string.Join(", ", assignments) + "\nFROM " + block.From + where;
+    }
+
+    /// <summary>
+    /// The input of a WriteRel DELETE / UPDATE and the target's row in it: its alias, its FROM item and the WHERE
+    /// clause (with its leading line break, or empty). Refused unless the target is read exactly once at the top of
+    /// the input's FROM and the input is a plain query.
+    /// </summary>
+    private SelectBlock DmlTarget(WriteRel write, out string alias, out string targetRead, out string where)
+    {
+        var block = EmitRel(write.Input);
+        if (!block.IsPlain)
+        {
+            throw SubstraitTranslationException.Unsupported("a DELETE / UPDATE over a grouped, distinct, limited or windowed query.");
+        }
+        string target = _tableName?.Invoke(write.TableNames) ?? string.Join(".", write.TableNames.Select(TSql.Identifier));
+        var atTop = _reads.Where(r => r.From.StartsWith(target + " AS ", StringComparison.Ordinal))
+                          .Select(r => r.From)
+                          .Where(from => TopLevelOccurrences(block.From, from) == 1)
+                          .ToList();
+        if (atTop.Count != 1)
+        {
+            throw SubstraitTranslationException.Unsupported("the target table is not read exactly once at the top of the query.");
+        }
+        targetRead = atTop[0];
+        alias = targetRead.Substring(target.Length + " AS ".Length);
+        where = block.Where.Count > 0 ? "\nWHERE " + string.Join("\n  AND ", block.Where) : "";
+        return block;
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] DuckDB's data-modifying CTE that MOVES rows —
+    /// <c>WITH moved AS (DELETE FROM src … RETURNING *) INSERT INTO dst SELECT * FROM moved</c> — as ONE statement:
+    /// a WriteRel INSERT on dst whose input is a WriteRel DELETE on src with MODIFIED_RECORDS output, the deleted
+    /// columns named by its table_schema in the order of the INSERT's columns:
+    /// <c>DELETE [t0] OUTPUT DELETED.[s…] INTO dst ([d…]) FROM … WHERE …</c>. No row leaves the server.
+    /// </summary>
+    private string EmitMovedDelete(WriteRel insert, WriteRel delete)
+    {
+        if (delete.Emit != null)
+        {
+            throw SubstraitTranslationException.Unsupported("WriteRel with an output mapping.");
+        }
+        if (delete.ColumnNames.Count != insert.ColumnNames.Count)
+        {
+            throw SubstraitTranslationException.MalformedPlan($"the DELETE outputs {delete.ColumnNames.Count} columns but the INSERT writes {insert.ColumnNames.Count}.");
+        }
+        string target = _tableName?.Invoke(insert.TableNames) ?? string.Join(".", insert.TableNames.Select(TSql.Identifier));
+        var block = DmlTarget(delete, out string alias, out _, out string where);
+        return "DELETE " + alias +
+               "\nOUTPUT " + string.Join(", ", delete.ColumnNames.Select(c => "DELETED." + TSql.Identifier(c))) +
+               "\nINTO " + target + " (" + string.Join(", ", insert.ColumnNames.Select(TSql.Identifier)) + ")" +
+               "\nFROM " + block.From + where;
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] The host's MERGE (a WriteRel with the <c>fabricator.merge</c> enhancement):
+    /// its input is ONE query that has already decided, per row, what DuckDB's MERGE does — the target's key, whether
+    /// the target row exists (<c>tp</c>), the action (<c>op</c>: 1 UPDATE / 2 DELETE / 3 INSERT) and the new values — its table_schema names
+    /// each column's role (<c>k:&lt;key&gt;</c>, <c>tp</c>, <c>op</c>, <c>u:&lt;column&gt;</c>, <c>i:&lt;column&gt;</c>). Written as a
+    /// fixed-shape T-SQL MERGE that matches by the key (null-safe: a unique index may hold one NULL):
+    /// <c>MERGE target AS [T] USING (…) AS [S] ON [S].[tp] = 1 AND &lt;key&gt; WHEN MATCHED AND [S].[op] = 1 THEN UPDATE …
+    /// WHEN MATCHED AND [S].[op] = 2 THEN DELETE WHEN NOT MATCHED BY TARGET AND [S].[op] = 3 THEN INSERT …;</c>
+    /// With the value <c>check_duplicates</c> (a WHEN MATCHED … DELETE exists) a check precedes it: T-SQL deletes a row
+    /// that two source rows match without complaint, DuckDB refuses to change a target row more than once.
+    /// </summary>
+    public string EmitMerge(WriteRel write)
+    {
+        if (write.Enhancement != F.Enhancement_FabricatorMerge || write.Emit != null || write.Output == F.WriteOutput_ModifiedRecords)
+        {
+            throw SubstraitTranslationException.Unsupported("a MERGE WriteRel with an output.");
+        }
+        var block = EmitRel(write.Input);
+        if (block.Columns.Count != write.ColumnNames.Count)
+        {
+            throw SubstraitTranslationException.MalformedPlan($"the MERGE names {write.ColumnNames.Count} roles but its input has {block.Columns.Count} columns.");
+        }
+        var names = Enumerable.Range(0, block.Columns.Count).Select(i => "c" + i.ToString(CultureInfo.InvariantCulture)).ToList();
+        string source = Render(block, SelectList(block, names), keepOrder: false);
+        var keys = new List<(string Column, string Name)>();
+        var updates = new List<(string Column, string Name)>();
+        var inserts = new List<(string Column, string Name)>();
+        string? tp = null, op = null;
+        for (int i = 0; i < write.ColumnNames.Count; i++)
+        {
+            string role = write.ColumnNames[i];
+            string name = TSql.Identifier(names[i]);
+            if (role == "tp") tp = name;
+            else if (role == "op") op = name;
+            else if (role.StartsWith("k:", StringComparison.Ordinal)) keys.Add((role.Substring(2), name));
+            else if (role.StartsWith("u:", StringComparison.Ordinal)) updates.Add((role.Substring(2), name));
+            else if (role.StartsWith("i:", StringComparison.Ordinal)) inserts.Add((role.Substring(2), name));
+            else throw SubstraitTranslationException.MalformedPlan($"the MERGE column role '{role}' is unknown.");
+        }
+        if (tp == null || op == null || keys.Count == 0)
+        {
+            throw SubstraitTranslationException.MalformedPlan("the MERGE has no key, tp or op column.");
+        }
+        string target = _tableName?.Invoke(write.TableNames) ?? string.Join(".", write.TableNames.Select(TSql.Identifier));
+        var sb = new StringBuilder();
+        if (write.EnhancementValue == "check_duplicates")
+        {
+            sb.Append("IF EXISTS (SELECT 1 FROM (").Append(source).Append(") AS [S] WHERE [S].").Append(op)
+              .Append(" IN (1, 2) AND [S].").Append(tp).Append(" = 1 GROUP BY ")
+              .Append(string.Join(", ", keys.Select(k => "[S]." + k.Name)))
+              .Append(" HAVING COUNT(*) > 1)\n  THROW 50000, N'MERGE INTO command cannot affect the same target row more than once. ")
+              .Append("A target row matched more than one source row; ensure the source rows are deduplicated or the ON condition is unique.', 1;\n");
+        }
+        sb.Append("MERGE ").Append(target).Append(" AS [T]\nUSING (").Append(source).Append(") AS [S]\nON [S].").Append(tp).Append(" = 1");
+        foreach (var k in keys)
+        {
+            string t = "[T]." + TSql.Identifier(k.Column), s = "[S]." + k.Name;
+            sb.Append(" AND (").Append(t).Append(" = ").Append(s).Append(" OR (").Append(t).Append(" IS NULL AND ").Append(s).Append(" IS NULL))");
+        }
+        if (updates.Count > 0)
+        {
+            sb.Append("\nWHEN MATCHED AND [S].").Append(op).Append(" = 1 THEN UPDATE SET ")
+              .Append(string.Join(", ", updates.Select(u => TSql.Identifier(u.Column) + " = [S]." + u.Name)));
+        }
+        sb.Append("\nWHEN MATCHED AND [S].").Append(op).Append(" = 2 THEN DELETE");
+        if (inserts.Count > 0)
+        {
+            sb.Append("\nWHEN NOT MATCHED BY TARGET AND [S].").Append(op).Append(" = 3 THEN INSERT (")
+              .Append(string.Join(", ", inserts.Select(i => TSql.Identifier(i.Column)))).Append(") VALUES (")
+              .Append(string.Join(", ", inserts.Select(i => "[S]." + i.Name))).Append(')');
+        }
+        sb.Append(';');
+        return sb.ToString();
+    }
+
+    /// <summary>How often <paramref name="part"/> occurs in <paramref name="from"/> outside parentheses, quoted
+    /// identifiers and string literals — i.e. as a table of the FROM itself, not of a derived table.</summary>
+    private static int TopLevelOccurrences(string from, string part)
+    {
+        int count = 0, depth = 0;
+        for (int i = 0; i < from.Length; i++)
+        {
+            char c = from[i];
+            if (c == '[')
+            {
+                int end = from.IndexOf(']', i + 1);
+                while (end >= 0 && end + 1 < from.Length && from[end + 1] == ']')
+                {
+                    end = from.IndexOf(']', end + 2);
+                }
+                if (depth == 0 && string.CompareOrdinal(from, i, part, 0, part.Length) == 0)
+                {
+                    count++;
+                }
+                i = end < 0 ? from.Length : end;
+                continue;
+            }
+            if (c == '\'')
+            {
+                int end = i + 1;
+                while (end < from.Length && !(from[end] == '\'' && (end + 1 >= from.Length || from[end + 1] != '\'')))
+                {
+                    end += from[end] == '\'' ? 2 : 1;
+                }
+                i = end;
+                continue;
+            }
+            if (c == '(')
+            {
+                depth++;
+            }
+            else if (c == ')')
+            {
+                depth--;
+            }
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Writes a WriteRel INSERT with no output as
+    /// <c>INSERT INTO &lt;table&gt; (&lt;columns&gt;) &lt;query&gt;</c>. Only the columns the plan lists are
+    /// named, so the table's other columns take their own defaults (an IDENTITY, a <c>getdate()</c>) — the
+    /// host's producer lists exactly the columns the statement named. Order is not kept: an INSERT has none.
+    /// </summary>
+    public string EmitInsert(WriteRel write)
+    {
+        if (write.Op != F.WriteOp_Insert)
+        {
+            throw SubstraitTranslationException.Unsupported($"WriteRel operation {write.Op}; only INSERT is translated.");
+        }
+        if (write.Output == F.WriteOutput_ModifiedRecords)
+        {
+            throw SubstraitTranslationException.Unsupported("WriteRel output of the modified records (RETURNING).");
+        }
+        if (write.Emit != null)
+        {
+            throw SubstraitTranslationException.Unsupported("WriteRel with an output mapping.");
+        }
+        if (write.ColumnNames.Count == 0)
+        {
+            throw SubstraitTranslationException.MalformedPlan("WriteRel table_schema has no columns.");
+        }
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string name in write.ColumnNames)
+        {
+            if (!seen.Add(name))
+            {
+                throw SubstraitTranslationException.MalformedPlan($"WriteRel table_schema has duplicate column name '{name}'.");
+            }
+        }
+        if (write.Input is WriteRel { Op: F.WriteOp_Delete, Output: F.WriteOutput_ModifiedRecords } moved)
+        {
+            return EmitMovedDelete(write, moved);
+        }
+        var block = EmitRel(write.Input);
+        if (block.Columns.Count != write.ColumnNames.Count)
+        {
+            throw SubstraitTranslationException.MalformedPlan($"WriteRel writes {write.ColumnNames.Count} columns but its input has {block.Columns.Count}.");
+        }
+        string target = _tableName?.Invoke(write.TableNames) ?? string.Join(".", write.TableNames.Select(TSql.Identifier));
+        var names = Enumerable.Range(0, block.Columns.Count).Select(i => "c" + i.ToString(CultureInfo.InvariantCulture)).ToList();
+        return "INSERT INTO " + target + " (" + string.Join(", ", write.ColumnNames.Select(TSql.Identifier)) + ")\n" +
+               Render(block, SelectList(block, names), keepOrder: false);
+    }
+
     #region Relations
 
     private SelectBlock EmitRel(Rel rel)
@@ -95,9 +448,11 @@ internal sealed class TSqlEmitter
             SortRel r => EmitSort(r),
             AggregateRel r => EmitAggregate(r),
             JoinRel r => EmitJoin(r),
+            CrossRel { Apply: true } r => EmitApply(r), // [FABRICATOR-PATCH: OURS-BY-DESIGN]
             CrossRel r => EmitJoin(new JoinRel { Left = r.Left, Right = r.Right, Type = F.JoinType_Inner }),
             SetRel r => EmitSet(r),
             TopNRel r => EmitTopN(r),
+            WindowRel r => EmitWindow(r), // [FABRICATOR-PATCH: OURS-BY-DESIGN] window functions
             _ => throw SubstraitTranslationException.Unsupported($"relation {rel.GetType().Name}"),
         };
 
@@ -122,7 +477,30 @@ internal sealed class TSqlEmitter
         return block;
     }
 
-    private SelectBlock EmitRead(ReadRel rel)
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A table function called once per row of the left side:
+    /// <c>FROM left CROSS APPLY [s].[f](left columns) AS tN</c>. No rows from the function, no row out — as the
+    /// lateral call it replaces.
+    /// </summary>
+    private SelectBlock EmitApply(CrossRel rel)
+    {
+        if (rel.Right is not ReadRel { TableFunctionArgs: not null } call || call.Filter != null ||
+            call.BestEffortFilter != null || call.Emit != null)
+        {
+            throw SubstraitTranslationException.Unsupported("An apply calls exactly one table function.");
+        }
+        var left = JoinInput(EmitRel(rel.Left), nullSupplying: false, keepWhere: true);
+        var right = EmitRead(call, left.Columns);
+        return new SelectBlock
+        {
+            From = $"{left.From}\nCROSS APPLY {right.From}",
+            FromIsJoin = true,
+            Columns = left.Columns.Concat(right.Columns).ToList(),
+            Where = left.Where.Concat(right.Where).ToList(),
+        };
+    }
+
+    private SelectBlock EmitRead(ReadRel rel, IReadOnlyList<SqlColumn>? argumentScope = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string name in rel.ColumnNames)
@@ -135,27 +513,49 @@ internal sealed class TSqlEmitter
 
         string alias = NewAlias();
         var block = new SelectBlock();
-        if (rel.VirtualRows != null)
+        IReadOnlyDictionary<string, string>? sqlTypes = null;
+        if (rel.TableFunctionArgs != null)
+        {
+            // [FABRICATOR-PATCH: OURS-BY-DESIGN] a table function of the catalog, called with its constant arguments
+            string display = string.Join(".", rel.TableNames);
+            string name = CatalogTableFunctions?.Invoke(rel.TableNames)
+                          ?? throw SubstraitTranslationException.Unsupported($"{display}() is not a table function of the server");
+            // constants, or (in an apply) references to the columns of the left side
+            var args = rel.TableFunctionArgs.Select(arg => Render(arg, argumentScope ?? Array.Empty<SqlColumn>()).Value);
+            block.From = $"{name}({string.Join(", ", args)}) AS {alias}";
+        }
+        else if (rel.VirtualRows != null)
         {
             block.From = VirtualTable(rel, alias);
         }
         else
         {
             block.From = (_tableName?.Invoke(rel.TableNames) ?? string.Join(".", rel.TableNames.Select(TSql.Identifier))) + " AS " + alias;
+            _reads.Add((rel.TableNames, block.From));
+            sqlTypes = _columnSqlTypes?.Invoke(rel.TableNames); // [FABRICATOR-PATCH: OURS-BY-DESIGN]
         }
+        var byteLengths = rel.VirtualRows == null ? ColumnByteLengths?.Invoke(rel.TableNames) : null;
         for (int i = 0; i < rel.ColumnNames.Count; i++)
         {
-            block.Columns.Add(ColumnOf(alias, rel.ColumnNames[i], rel.ColumnTypes[i]));
+            string? sqlType = null;
+            sqlTypes?.TryGetValue(rel.ColumnNames[i], out sqlType);
+            var column = ColumnOf(alias, rel.ColumnNames[i], rel.ColumnTypes[i], sqlType);
+            block.Columns.Add(column);
+            if (sqlType == null && column.Type.IsStringLike && byteLengths != null &&
+                byteLengths.TryGetValue(rel.ColumnNames[i], out var length))
+            {
+                _boundedStrings[column.Expr.Value] = (column.Raw ?? column.Expr.Value, length.Bytes, length.Unicode);
+            }
         }
 
         // The filters apply to the base schema, before the projection.
         if (rel.Filter != null)
         {
-            block.Where.Add(Predicate(rel.Filter, block.Columns));
+            block.Where.Add(FilterPredicate(rel.Filter, block.Columns));
         }
         if (rel.BestEffortFilter != null)
         {
-            block.Where.Add(Predicate(rel.BestEffortFilter, block.Columns));
+            block.Where.Add(FilterPredicate(rel.BestEffortFilter, block.Columns));
         }
         if (rel.Projection != null)
         {
@@ -165,6 +565,12 @@ internal sealed class TSqlEmitter
                 projected.Add(Column(block.Columns, index));
             }
             block.Columns = projected;
+        }
+        // [FABRICATOR-PATCH: OURS-BY-DESIGN] the filters above refused such a column through Column(); this
+        // covers one that would only be passed through.
+        if (block.Columns.FirstOrDefault(c => c.Unsupported != null) is { } unsupported)
+        {
+            throw new SubstraitTranslationException(unsupported.Unsupported!);
         }
         return block;
     }
@@ -215,8 +621,74 @@ internal sealed class TSqlEmitter
         {
             block = Wrap(block, keepOrder: true);
         }
-        block.Where.Add(Predicate(rel.Condition, block.Columns));
+        block.Where.Add(FilterPredicate(rel.Condition, block.Columns));
         return block;
+    }
+
+    /// <summary>
+    /// A WHERE condition: as <see cref="Predicate"/>, except that a conjunct which is a boolean column carrying
+    /// <see cref="SqlColumn.TrueWhen"/> renders that (a WHERE keeps only TRUE). MEASURED on TPC-H q20 (SF1, no
+    /// indexes): `CASE WHEN EXISTS … THEN 1 WHEN EXISTS … THEN NULL ELSE 0 END = 1` did not finish in 300 s, the bare
+    /// EXISTS is a semi join (67 ms for the IN alone).
+    /// </summary>
+    private string FilterPredicate(Expr condition, IReadOnlyList<SqlColumn> scope)
+    {
+        if (condition is ScalarFunctionExpr { Function.Name: "and" } conjunction && conjunction.Args.Count > 0
+            && conjunction.Args.All(a => a.Value != null))
+        {
+            return "(" + string.Join(" AND ", conjunction.Args.Select(a => FilterPredicate(a.Value!, scope))) + ")";
+        }
+        if (condition is FieldRefExpr { StepsOut: 0 } field && field.Index >= 0 && field.Index < scope.Count
+            && scope[field.Index].TrueWhen is { } trueWhen)
+        {
+            return "(" + trueWhen + ")";
+        }
+        if (condition is ScalarFunctionExpr { Function.Name: "not" } negation && negation.Args.Count == 1
+            && negation.Args[0].Value is FieldRefExpr { StepsOut: 0 } negated && negated.Index >= 0 && negated.Index < scope.Count
+            && scope[negated.Index].FalseWhen is { } falseWhen)
+        {
+            return "(" + falseWhen + ")";
+        }
+        // a long IN list that is a conjunct of its own may lead with an indexable superset (see OpenJsonList)
+        if (condition is SingularOrListExpr list && OpenJsonList(list, scope, indexable: true) is { } json)
+        {
+            return json.Predicate;
+        }
+        return Predicate(condition, scope);
+    }
+
+    /// <summary>
+    /// `outer NOT IN (SELECT inner FROM …)` for a mark join on ONE equality of non-string operands, one reading only
+    /// the outer side and the other only the inner; null otherwise.
+    /// </summary>
+    private string? NotIn(SelectBlock inner, Expr condition, int leftCount, IReadOnlyList<SqlColumn> scope, bool leftOuter)
+    {
+        if (condition is not ScalarFunctionExpr { Function.Name: "equal" } eq || eq.Args.Count != 2
+            || eq.Args[0].Value is not { } a || eq.Args[1].Value is not { } b)
+        {
+            return null;
+        }
+        int total = scope.Count;
+        var (outerFrom, outerTo, innerFrom, innerTo) = leftOuter ? (0, leftCount, leftCount, total) : (leftCount, total, 0, leftCount);
+        Expr? o = Within(a, outerFrom, outerTo) && Within(b, innerFrom, innerTo) ? a
+            : Within(b, outerFrom, outerTo) && Within(a, innerFrom, innerTo) ? b : null;
+        if (o == null)
+        {
+            return null;
+        }
+        var i = ReferenceEquals(o, a) ? b : a;
+        var os = Render(o, scope);
+        var ins = Render(i, scope);
+        if (!os.Type.IsKnown || !ins.Type.IsKnown || os.Type.IsStringLike || ins.Type.IsStringLike || os.Type.Kind != ins.Type.Kind)
+        {
+            return null;
+        }
+        string sql = $"{os.Value} NOT IN (SELECT {ins.Value} FROM {inner.From}";
+        if (inner.Where.Count > 0)
+        {
+            sql += " WHERE " + string.Join(" AND ", inner.Where);
+        }
+        return sql + ")";
     }
 
     private SelectBlock EmitProject(ProjectRel rel)
@@ -386,11 +858,12 @@ internal sealed class TSqlEmitter
                 // T-SQL rejects constant ORDER BY items, and they don't change the order.
                 continue;
             }
+            Comparable(key.Type, key.Value); // [FABRICATOR-PATCH: OURS-BY-DESIGN] binary values decline
             if (key.Type.Kind == TypeKind.Uuid)
             {
                 throw SubstraitTranslationException.Unsupported("Sorting by uuid values is not supported; SQL Server orders uniqueidentifier by its last bytes first.");
             }
-            string value = key.Value;
+            string value = key.Type.IsStringLike && ExactStrings ? StringKey(key.Value) : key.Value; // [FABRICATOR-PATCH: OURS-BY-DESIGN] exact string order
             bool nullable = MayBeNull(key);
             // SQL Server sorts nulls as the lowest values.
             switch (sort.Direction)
@@ -474,22 +947,37 @@ internal sealed class TSqlEmitter
             block = Wrap(block, keepOrder: false);
         }
 
-        var keys = groupingExpressions.Select(e => Render(e, block.Columns)).ToList();
+        var rawKeys = groupingExpressions.Select(e => Render(e, block.Columns)).ToList();
+        // [FABRICATOR-PATCH: OURS-BY-DESIGN] a string groups by its exact key and is read back from it
+        var keys = rawKeys.Select(k => k.Type.IsStringLike ? new SqlExpr(EqualityKey(k.Value), null, k.Type, k.Props) : new SqlExpr(Comparable(k.Type, k.Value), null, k.Type, k.Props)).ToList();
+        string Out(SqlExpr key, string value) => key.Type.IsStringLike && ExactStrings ? StringFromEqualityKey(value) : value;
         var measures = measureList.Select(m => TSqlFunctionCatalog.WriteAggregate(this, m, block.Columns)).ToList();
 
         var output = new List<SqlColumn>(keys.Count + measures.Count + 1);
         var sets = rel.GroupingSets;
         if (sets.Count <= 1)
         {
-            var distinctKeys = keys.Select(k => k.Value).Distinct(StringComparer.Ordinal).ToList();
+            // [FABRICATOR-PATCH: OURS-BY-DESIGN] a varchar key column groups by itself too and is read back as itself
+            var columns = rawKeys.Select(k => k.Type.IsStringLike ? KeyColumn(k.Value) : null).ToList();
+            var distinctKeys = keys.Select(k => k.Value).Concat(columns.Where(c => c != null).Select(c => c!))
+                .Distinct(StringComparer.Ordinal).ToList();
             block.GroupBy = distinctKeys.Count == 0 ? null : string.Join(", ", distinctKeys);
             for (int i = 0; i < keys.Count; i++)
             {
-                output.Add(new SqlColumn(KeyName(rel.GroupingExpressions[i], scope), keys[i], isBare: false));
+                output.Add(new SqlColumn(KeyName(rel.GroupingExpressions[i], scope), new SqlExpr(columns[i] ?? Out(keys[i], keys[i].Value), null, keys[i].Type, keys[i].Props), isBare: false));
             }
         }
         else
         {
+            if (sets.Any(set => set.Count == 0))
+            {
+                // MEASURED (SQL Server 2025): on an empty input every GROUP BY form returns no row — GROUPING SETS
+                // ((), (g)), ROLLUP, CUBE, even GROUP BY () — where the empty set yields its grand-total row
+                // (count 0) in DuckDB and in standard SQL. Alone, () is rendered without a GROUP BY, which keeps
+                // that row; beside other sets it would be lost.
+                throw SubstraitTranslationException.Unsupported(
+                    "grouping sets with the empty set (ROLLUP, CUBE) stay local: SQL Server drops their grand-total row on an empty input.");
+            }
             // GROUPING_ID tells the sets apart, by the grouping keys each one leaves out.
             var distinctKeys = keys.Select(k => k.Value).Distinct(StringComparer.Ordinal).ToList();
             var masks = new List<int>(sets.Count);
@@ -536,7 +1024,7 @@ internal sealed class TSqlEmitter
                 {
                     value = $"CASE WHEN {index} IN ({string.Join(", ", named)}) THEN {value} END";
                 }
-                output.Add(new SqlColumn(KeyName(rel.GroupingExpressions[i], scope), new SqlExpr(value, null, type, keys[i].Props | SqlProps.Aggregate), isBare: false));
+                output.Add(new SqlColumn(KeyName(rel.GroupingExpressions[i], scope), new SqlExpr(Out(keys[i], value), null, type, keys[i].Props | SqlProps.Aggregate), isBare: false));
             }
             measures.Add(SqlExpr.Of(index.ToString(), new SType(TypeKind.I32, nullable: false), SqlProps.Column | SqlProps.Aggregate));
         }
@@ -544,6 +1032,55 @@ internal sealed class TSqlEmitter
         output.AddRange(measures.Select(m => new SqlColumn(NewName("_a"), m, isBare: false)));
         block.Columns = output;
         block.Aggregated = true;
+        return block;
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A window relation: the input's columns, then one column per window
+    /// function. Partitions and ORDER BY items use the exact string key (§3.6), so partitions, peers and ranks are
+    /// DuckDB's; the ORDER BY items carry DuckDB's null order. The input is made plain first: T-SQL evaluates
+    /// window functions after WHERE and GROUP BY, and does not nest them.
+    /// </summary>
+    private SelectBlock EmitWindow(WindowRel rel)
+    {
+        var block = EmitRel(rel.Input);
+        if (!block.IsPlain)
+        {
+            block = Wrap(block, keepOrder: true);
+        }
+        var scope = block.Columns;
+        void Check(SqlExpr e, string what)
+        {
+            if ((e.Props & (SqlProps.Subquery | SqlProps.Outer | SqlProps.Window | SqlProps.Aggregate)) != 0)
+            {
+                throw SubstraitTranslationException.Unsupported($"a window {what} with a subquery, an outer reference or an aggregate is not supported.");
+            }
+        }
+        var partitions = new List<string>();
+        foreach (var expr in rel.Partitions)
+        {
+            var e = Render(expr, scope);
+            Check(e, "partition");
+            if ((e.Props & SqlProps.Column) == 0)
+            {
+                continue; // a constant puts every row in one partition, as no partition does
+            }
+            partitions.Add(e.Type.IsStringLike ? EqualityKey(e.Value) : Comparable(e.Type, e.Value));
+            if (e.Type.IsStringLike && KeyColumn(e.Value) is { } column)
+            {
+                partitions.Add(column); // [FABRICATOR-PATCH: OURS-BY-DESIGN] the same partitions; see KeyColumn
+            }
+        }
+        foreach (var sort in rel.Sorts)
+        {
+            Check(Render(sort.Expr, scope), "order");
+        }
+        var order = OrderItems(rel.Sorts, scope);
+        var added = rel.Functions
+            .Select(f => new SqlColumn(NewName("_w"), TSqlFunctionCatalog.WriteWindow(this, f, scope, partitions, order), isBare: false))
+            .ToList();
+        block.Columns = block.Columns.Concat(added).ToList();
+        block.Windowed = true;
         return block;
     }
 
@@ -572,8 +1109,9 @@ internal sealed class TSqlEmitter
             case F.JoinType_RightMark:
                 return EmitMarkJoin(rel);
             case F.JoinType_LeftSingle:
+                return EmitSingleJoin(rel);
             case F.JoinType_RightSingle:
-                throw SubstraitTranslationException.Unsupported("Single joins are not supported.");
+                throw SubstraitTranslationException.Unsupported("Right single joins are not supported.");
             default:
                 throw SubstraitTranslationException.MalformedPlan($"Join type {rel.Type} is not valid.");
         }
@@ -624,6 +1162,263 @@ internal sealed class TSqlEmitter
         return block;
     }
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A left single join — a correlated scalar subquery after DuckDB decorrelated it:
+    /// the left rows, each with the ONE right row the condition matches (NULLs for none), and an error for more than
+    /// one unless <see cref="SingleJoinAnyRow"/>. ONE read of the right side per left row: an OUTER APPLY of its first
+    /// matching row and how many matched. A scalar subquery per right column would read it once per column, and
+    /// T-SQL drops an unread one with its error — DuckDB raises it all the same (measured). The error is T-SQL's own
+    /// (512): a subquery in the CASE branch that returns two rows, evaluated only when the branch is taken.
+    /// </summary>
+    private SelectBlock EmitSingleJoin(JoinRel rel)
+    {
+        if (RanksOrLimits(rel.Right))
+        {
+            // MEASURED: a top-1 per key (`ORDER BY … LIMIT 1` in the subquery) decorrelates into ROW_NUMBER() OVER
+            // (PARTITION BY key) over the WHOLE right table, and SQL Server ranks it again for every left row — with
+            // `=` as with IS NOT DISTINCT FROM. 1457 s pushed against 0.33 s in DuckDB (20k outer rows, 1M inner).
+            throw SubstraitTranslationException.Unsupported(
+                "a correlated subquery that ranks or limits rows stays local (SQL Server would rank the whole table per row).");
+        }
+        var left = EmitRel(rel.Left);
+        var right = EmitRel(rel.Right);
+        if (rel.Expression == null || !JoinsSeekable(rel.Right) || !HasSeekableKey(rel.Expression, left.Columns.Count, right))
+        {
+            // MEASURED: keyed on a plain column of the right table SQL Server builds an index spool once (20k outer
+            // rows, 1M inner, no index: 1.8 s pushed, 1.1 s local). A correlation DuckDB cannot reduce to such a key
+            // (an expression) arrives as the right table JOINED with the outer keys inside the apply, which SQL Server
+            // evaluates again for every left row (2k x 100k: 45 s pushed, 0.27 s local).
+            throw SubstraitTranslationException.Unsupported(
+                "a correlated subquery that does not match on a plain column stays local (SQL Server would evaluate it once per row).");
+        }
+        PrepareExistsSides(ref left, ref right, leftOuter: true);
+        if (!IsTrue(rel.Expression))
+        {
+            right.Where.Add(Predicate(rel.Expression, left.Columns.Concat(right.Columns).ToList()));
+        }
+        var names = UniqueNames(right.Columns.Select(c => c.Name));
+        var items = SelectList(right, names);
+        string matches = UniqueName("_n", names);
+        items.Add(("COUNT_BIG(*) OVER ()", matches));
+        right.Top = "1";
+        string alias = NewAlias();
+        left.From = left.From + "\nOUTER APPLY " + TSql.Parenthesize(Render(right, items, keepOrder: false)) + " AS " + alias;
+        left.FromIsJoin = true;
+        left.Columns = left.Columns
+            .Concat(names.Select((n, i) => ColumnOf(alias, n, right.Columns[i].Type.WithNullable(true))))
+            .ToList();
+        if (!SingleJoinAnyRow)
+        {
+            string count = alias + "." + TSql.Identifier(matches);
+            left.Where.Add($"(CASE WHEN {count} > 1 THEN (SELECT {count} FROM (VALUES (1), (2)) AS [_v]([x])) ELSE 0 END = 0)");
+        }
+        if (rel.PostJoinFilter != null)
+        {
+            left.Where.Add(Predicate(rel.PostJoinFilter, left.Columns));
+        }
+        return left;
+    }
+
+    /// <summary>
+    /// Whether a join condition holds an equality (a conjunct of it) between a plain column of the right side, as the
+    /// right block projects it before any wrapping, and an expression of the left side alone: the key SQL Server can
+    /// seek or spool the right side on.
+    /// </summary>
+    private static bool HasSeekableKey(Expr condition, int leftCount, SelectBlock right)
+    {
+        if (condition is not ScalarFunctionExpr f)
+        {
+            return false;
+        }
+        if (f.Function.Name == "and")
+        {
+            return f.Args.Any(a => a.Value != null && HasSeekableKey(a.Value, leftCount, right));
+        }
+        if (f.Function.Name is not ("equal" or "is_not_distinct_from") || f.Args.Count != 2)
+        {
+            return false;
+        }
+        bool RightColumn(Expr? e) => e is FieldRefExpr { StepsOut: 0 } r && r.Index >= leftCount
+                                     && r.Index - leftCount < right.Columns.Count && right.Columns[r.Index - leftCount].IsBare;
+        var a0 = f.Args[0].Value;
+        var a1 = f.Args[1].Value;
+        return (RightColumn(a0) && Within(a1, 0, leftCount)) || (RightColumn(a1) && Within(a0, 0, leftCount));
+    }
+
+    /// <summary>
+    /// Whether an expression reads only input fields in [<paramref name="from"/>, <paramref name="to"/>) (unknown
+    /// shapes: no).
+    /// </summary>
+    private static bool Within(Expr? expr, int from, int to) => expr switch
+    {
+        LiteralExpr => true,
+        FieldRefExpr { StepsOut: 0 } r => r.Index >= from && r.Index < to,
+        CastExpr c => Within(c.Input, from, to),
+        ScalarFunctionExpr f => f.Args.All(a => a.Value == null || Within(a.Value, from, to)),
+        _ => false,
+    };
+
+    /// <summary>
+    /// Whether every join below a relation can seek: its condition holds an equality between a column that is a
+    /// table column (followed through projections and grouping keys) on one side and an expression of the other side
+    /// alone.
+    /// </summary>
+    private static bool JoinsSeekable(Rel rel) => rel switch
+    {
+        JoinRel j => SeekableJoin(j) && JoinsSeekable(j.Left) && JoinsSeekable(j.Right),
+        CrossRel c => JoinsSeekable(c.Left) && JoinsSeekable(c.Right),
+        FilterRel f => JoinsSeekable(f.Input),
+        ProjectRel p => JoinsSeekable(p.Input),
+        SortRel s => JoinsSeekable(s.Input),
+        AggregateRel a => JoinsSeekable(a.Input),
+        WindowRel w => JoinsSeekable(w.Input),
+        FetchRel f => JoinsSeekable(f.Input),
+        TopNRel t => JoinsSeekable(t.Input),
+        SetRel s => s.Inputs.All(JoinsSeekable),
+        _ => true,
+    };
+
+    private static bool SeekableJoin(JoinRel j)
+    {
+        if (j.Expression == null || IsTrue(j.Expression))
+        {
+            return true; // a product of its two sides, each checked on its own
+        }
+        int lw = Width(j.Left), rw = Width(j.Right);
+        return lw >= 0 && rw >= 0 && ColumnKey(j.Expression, j, lw, rw);
+    }
+
+    private static bool ColumnKey(Expr condition, JoinRel j, int lw, int rw)
+    {
+        if (condition is not ScalarFunctionExpr f)
+        {
+            return false;
+        }
+        if (f.Function.Name == "and")
+        {
+            return f.Args.Any(a => a.Value != null && ColumnKey(a.Value, j, lw, rw));
+        }
+        if (f.Function.Name is not ("equal" or "is_not_distinct_from") || f.Args.Count != 2)
+        {
+            return false;
+        }
+        bool Column(Expr? e, bool leftSide) => e is FieldRefExpr { StepsOut: 0 } r && (leftSide
+            ? r.Index < lw && FromTable(j.Left, r.Index)
+            : r.Index >= lw && r.Index < lw + rw && FromTable(j.Right, r.Index - lw));
+        bool Other(Expr? e, bool leftSide) => leftSide ? Within(e, 0, lw) : Within(e, lw, lw + rw);
+        var a0 = f.Args[0].Value;
+        var a1 = f.Args[1].Value;
+        return (Column(a0, true) && Other(a1, false)) || (Column(a0, false) && Other(a1, true))
+               || (Column(a1, true) && Other(a0, false)) || (Column(a1, false) && Other(a0, true));
+    }
+
+    /// <summary>Whether output field <paramref name="index"/> of a relation is a column of a table it reads.</summary>
+    private static bool FromTable(Rel rel, int index)
+    {
+        if (rel.Emit != null)
+        {
+            if (index < 0 || index >= rel.Emit.Count)
+            {
+                return false;
+            }
+            index = rel.Emit[index];
+        }
+        switch (rel)
+        {
+            case ReadRel r:
+                return r.VirtualRows == null && r.TableFunctionArgs == null && r.TableNames.Count > 0;
+            case FilterRel f:
+                return FromTable(f.Input, index);
+            case SortRel s:
+                return FromTable(s.Input, index);
+            case FetchRel f:
+                return FromTable(f.Input, index);
+            case TopNRel t:
+                return FromTable(t.Input, index);
+            case ProjectRel p:
+            {
+                int w = Width(p.Input);
+                if (w < 0)
+                {
+                    return false;
+                }
+                return index < w
+                    ? FromTable(p.Input, index)
+                    : index - w < p.Expressions.Count && p.Expressions[index - w] is FieldRefExpr { StepsOut: 0 } r
+                      && FromTable(p.Input, r.Index);
+            }
+            case JoinRel { Type: F.JoinType_Inner or F.JoinType_Left or F.JoinType_Right or F.JoinType_Outer } j:
+            {
+                int lw = Width(j.Left);
+                return lw >= 0 && (index < lw ? FromTable(j.Left, index) : FromTable(j.Right, index - lw));
+            }
+            case AggregateRel a when a.GroupingSets.Count <= 1:
+                // a grouping key that is a table column (DuckDB's decorrelation groups the right table by its key)
+                return index < a.GroupingExpressions.Count && a.GroupingExpressions[index] is FieldRefExpr { StepsOut: 0 } g
+                       && FromTable(a.Input, g.Index);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>A relation's output width (after its emit mapping), or -1 when this does not know it.</summary>
+    private static int Width(Rel rel) => rel.Emit?.Count ?? RawWidth(rel);
+
+    /// <summary>A relation's width before its emit mapping, or -1 when this does not know it.</summary>
+    private static int RawWidth(Rel rel)
+    {
+        switch (rel)
+        {
+            case ReadRel r:
+                return r.Projection?.Count ?? r.ColumnNames.Count;
+            case FilterRel f:
+                return Width(f.Input);
+            case SortRel s:
+                return Width(s.Input);
+            case FetchRel f:
+                return Width(f.Input);
+            case TopNRel t:
+                return Width(t.Input);
+            case ProjectRel p:
+            {
+                int w = Width(p.Input);
+                return w < 0 ? -1 : w + p.Expressions.Count;
+            }
+            case AggregateRel a when a.GroupingSets.Count <= 1:
+                return a.GroupingExpressions.Count + a.Measures.Count;
+            case WindowRel w:
+            {
+                int iw = Width(w.Input);
+                return iw < 0 ? -1 : iw + w.Functions.Count;
+            }
+            case JoinRel { Type: F.JoinType_Inner or F.JoinType_Left or F.JoinType_Right or F.JoinType_Outer
+                or F.JoinType_LeftSingle } j:
+                return Sum(Width(j.Left), Width(j.Right));
+            case CrossRel c:
+                return Sum(Width(c.Left), Width(c.Right));
+            case SetRel s when s.Inputs.Count > 0:
+                return Width(s.Inputs[0]);
+            default:
+                return -1;
+        }
+
+        static int Sum(int a, int b) => a < 0 || b < 0 ? -1 : a + b;
+    }
+
+    /// <summary>Whether a relation ranks or limits its rows (a window, a fetch, a top-n) anywhere below it.</summary>
+    private static bool RanksOrLimits(Rel rel) => rel switch
+    {
+        WindowRel or FetchRel or TopNRel => true,
+        FilterRel f => RanksOrLimits(f.Input),
+        ProjectRel p => RanksOrLimits(p.Input),
+        SortRel s => RanksOrLimits(s.Input),
+        AggregateRel a => RanksOrLimits(a.Input),
+        JoinRel j => RanksOrLimits(j.Left) || RanksOrLimits(j.Right),
+        CrossRel c => RanksOrLimits(c.Left) || RanksOrLimits(c.Right),
+        SetRel s => s.Inputs.Any(RanksOrLimits),
+        _ => false,
+    };
+
     /// <summary>Prepares a block to be one side of a join, wrapping it when it can't be joined as it stands.</summary>
     private SelectBlock JoinInput(SelectBlock block, bool nullSupplying, bool keepWhere)
     {
@@ -672,18 +1467,27 @@ internal sealed class TSqlEmitter
         // for some row, else false.
         string matched = Exists(inner, rel.Expression, scope, null);
         string mark;
+        string notMatched;
         if (rel.Expression == null || IsTrue(rel.Expression))
         {
             mark = $"CASE WHEN {matched} THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END";
+            notMatched = $"NOT {matched}";
         }
         else
         {
             string unknown = Exists(inner, rel.Expression, scope, c => $"CASE WHEN {c} THEN 1 WHEN NOT {c} THEN 0 END IS NULL");
             mark = $"CASE WHEN {matched} THEN CAST(1 AS bit) WHEN {unknown} THEN NULL ELSE CAST(0 AS bit) END";
+            // FALSE = no match and no unknown. For one non-string equality that is T-SQL's own NOT IN, three-valued
+            // alike, which SQL Server plans as an anti semi join (strings: IN would compare under the collation)
+            notMatched = NotIn(inner, rel.Expression, left.Columns.Count, scope, leftOuter) ?? $"NOT {matched} AND NOT {unknown}";
         }
         outer.Columns = outer.Columns.Concat(new[]
         {
-            new SqlColumn(NewName("_mark"), SqlExpr.Of(mark, SType.Bool, SqlProps.Column | SqlProps.Subquery), isBare: false),
+            new SqlColumn(NewName("_mark"), SqlExpr.Of(mark, SType.Bool, SqlProps.Column | SqlProps.Subquery), isBare: false)
+            {
+                TrueWhen = matched,
+                FalseWhen = notMatched,
+            },
         }).ToList();
         if (rel.PostJoinFilter != null)
         {
@@ -741,6 +1545,12 @@ internal sealed class TSqlEmitter
             .Select(i => inputs[0].Columns[i].Type.WithNullable(inputs.Any(b => !b.Columns[i].Type.IsKnown || b.Columns[i].Type.Nullable)))
             .ToList();
 
+        // [FABRICATOR-PATCH: OURS-BY-DESIGN] a set operation that compares rows compares strings by collation: decline those
+        // over strings (UNION ALL compares nothing).
+        if (rel.Op != F.SetOp_UnionAll && types.Any(t => t.IsStringLike || t.IsBinaryLike))
+        {
+            throw SubstraitTranslationException.Unsupported("set operations that compare string columns are not supported (collation semantics).");
+        }
         string sql;
         if (inputs.Count == 1)
         {
@@ -832,9 +1642,29 @@ internal sealed class TSqlEmitter
     }
 
     /// <summary>A column of a table or derived table; strings are given the query's collation.</summary>
-    private SqlColumn ColumnOf(string alias, string name, SType type)
+    private SqlColumn ColumnOf(string alias, string name, SType type, string? sqlType = null)
     {
         string reference = alias + "." + TSql.Identifier(name);
+        // [FABRICATOR-PATCH: OURS-BY-DESIGN] A server type that takes no COLLATE. json, text and ntext read as
+        // the same text the scan returns once converted to nvarchar(max). xml does NOT (the server writes
+        // <b/> where the scan's reader writes <b />), and sql_variant and the CLR types (hierarchyid,
+        // geometry, geography) have no matching conversion either, so a query that uses one runs locally.
+        if (sqlType != null)
+        {
+            switch (sqlType.ToLowerInvariant())
+            {
+                case "json":
+                case "text":
+                case "ntext":
+                    string text = "CAST(" + reference + " AS nvarchar(max))";
+                    return _collation != null && type.IsStringLike
+                        ? new SqlColumn(name, SqlExpr.Of(text + " COLLATE " + _collation, type, SqlProps.Column), isBare: true, raw: reference)
+                        : new SqlColumn(name, SqlExpr.Of(text, type, SqlProps.Column), isBare: true, raw: reference);
+                default:
+                    return new SqlColumn(name, SqlExpr.Of(reference, type, SqlProps.Column), isBare: true,
+                                         unsupported: $"column {name} is {sqlType} on the server");
+            }
+        }
         if (_collation != null && type.IsStringLike)
         {
             return new SqlColumn(name, SqlExpr.Of(reference + " COLLATE " + _collation, type, SqlProps.Column), isBare: true, raw: reference);
@@ -870,6 +1700,15 @@ internal sealed class TSqlEmitter
             From = TSql.Parenthesize(inner) + " AS " + alias,
             Columns = names.Select((n, i) => ColumnOf(alias, n, block.Columns[i].Type)).ToList(),
         };
+        // [FABRICATOR-PATCH: OURS-BY-DESIGN] a bounded column passed through keeps its bound
+        for (int i = 0; i < wrapped.Columns.Count; i++)
+        {
+            if (_boundedStrings.TryGetValue(block.Columns[i].Expr.Value, out var bound))
+            {
+                var outer = wrapped.Columns[i];
+                _boundedStrings[outer.Expr.Value] = (outer.Raw ?? outer.Expr.Value, bound.Bytes, bound.Unicode);
+            }
+        }
         foreach (var (name, descending) in hidden)
         {
             wrapped.OrderBy.Add(new OrderItem(alias + "." + TSql.Identifier(name), descending));
@@ -994,6 +1833,10 @@ internal sealed class TSqlEmitter
         {
             throw SubstraitTranslationException.MalformedPlan($"Field reference {index} is out of range; the input has {scope.Count} fields.");
         }
+        if (scope[index].Unsupported is { } why) // [FABRICATOR-PATCH: OURS-BY-DESIGN]
+        {
+            throw new SubstraitTranslationException(why);
+        }
         return scope[index];
     }
 
@@ -1035,6 +1878,107 @@ internal sealed class TSqlEmitter
 
     /// <summary>Gives a string value the query's collation (string literals and casts, which have none of their own).</summary>
     internal string Collate(string text) => _collation == null ? text : text + " COLLATE " + _collation;
+
+    // [FABRICATOR-PATCH: OURS-BY-DESIGN] Exact string semantics (DuckDB's: byte equality, code point order),
+    // where the collation the original relies on ignores trailing spaces and orders UTF-16 code units. The key
+    // is UTF-8 under a binary collation (byte order = code point order), with CHAR(1) and CHAR(0) escaped and a
+    // CHAR(0) appended, so that a prefix sorts first and no two different strings compare equal despite padding.
+    // For ORDER (ORDER BY, < and >, min/max); equality uses the cheaper EqualityKey. Measured: docs/duckdb-2.0-remote-
+    // execution.md §3.6.
+    internal static string StringKey(string value)
+        => $"(REPLACE(REPLACE(CONVERT(varchar(max), ({value}) COLLATE Latin1_General_100_BIN2_UTF8), CHAR(1), CHAR(1) + CHAR(2)), CHAR(0), CHAR(1) + CHAR(1)) + CHAR(0))";
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A rendered string column or literal in the form an index can use: the
+    /// column without the query collation (so it compares under its own, which its indexes are built in), a
+    /// literal of printable ASCII as a non-Unicode literal (so a varchar column is not converted, which would
+    /// rule out a seek). Null for anything else. Compared with <c>=</c>, two of these give a SUPERSET of exact
+    /// equality — byte-equal strings are equal under every collation — so it may only ever be ANDed with the
+    /// exact key comparison, never stand alone.
+    /// </summary>
+    internal static string? IndexableString(string rendered)
+    {
+        const string suffix = " COLLATE " + BinaryCollation;
+        if (!rendered.EndsWith(suffix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        string raw = rendered.Substring(0, rendered.Length - suffix.Length);
+        // a cast to nvarchar(max) does not change a string's value: look through it
+        const string castHead = "CAST(", castTail = " AS nvarchar(max))";
+        if (raw.StartsWith(castHead, StringComparison.Ordinal) && raw.EndsWith(castTail, StringComparison.Ordinal))
+        {
+            return IndexableString(raw.Substring(castHead.Length, raw.Length - castHead.Length - castTail.Length));
+        }
+        if (s_unicodeLiteral.IsMatch(raw))
+        {
+            string body = raw.Substring(2, raw.Length - 3);
+            return body.All(ch => ch >= 0x20 && ch < 0x7F) ? "'" + body + "'" : raw;
+        }
+        return s_columnReference.IsMatch(raw) ? raw : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex s_unicodeLiteral =
+        new(@"^N'(?:[^']|'')*'$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex s_columnReference =
+        new(@"^\[[^\]]+\]\.\[(?:[^\]]|\]\])*\]$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Whether a rendered value is a plain column reference.</summary>
+    internal static bool IsColumnReference(string? raw) => raw != null && s_columnReference.IsMatch(raw);
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A value about to be compared, grouped or sorted. SQL Server ignores
+    /// trailing zero bytes when it compares binary values (0x01 = 0x0100), DuckDB does not, so binary values
+    /// decline.
+    /// </summary>
+    internal static string Comparable(SType type, string value)
+        => type.IsBinaryLike
+            ? throw SubstraitTranslationException.Unsupported("comparing, grouping or sorting binary values is not supported; SQL Server ignores trailing zero bytes.")
+            : value;
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Exact string EQUALITY (=, IN, GROUP BY, DISTINCT, PARTITION BY, join keys):
+    /// the value as UTF-8 under a binary collation, with a sentinel the padding cannot reach. UTF-8 because the scan reads
+    /// an unpaired surrogate as U+FFFD, and so does this conversion — a UTF-16 key would keep values apart that DuckDB
+    /// sees as one. The varchar(MAX) it needs in general is what makes a key expensive (docs/duckdb-2.0-remote-execution.md
+    /// §4.18: 2.7 s against 0.43 s CPU over 1M rows), so a column whose declared length fits varchar(8000) gets that —
+    /// with a check that turns a value longer than that length (the column was widened since) into an error, never into
+    /// a cut key.
+    /// </summary>
+    internal string EqualityKey(string value)
+    {
+        if (!ExactStrings)
+        {
+            return value;
+        }
+        if (_boundedStrings.TryGetValue(value, out var bound))
+        {
+            string guarded = $"CASE WHEN DATALENGTH({bound.Raw}) > {bound.Bytes.ToString(CultureInfo.InvariantCulture)} " +
+                             "THEN CONVERT(nvarchar(1), CAST(N'fabricator: a string is longer than its column was when the query was translated; run fabricator_refresh_cache' AS int)) " +
+                             $"ELSE {value} END";
+            return $"CONVERT(varchar(8000), ({guarded} + N'|') COLLATE Latin1_General_100_BIN2_UTF8)";
+        }
+        return $"CONVERT(varchar(max), ({value} + N'|') COLLATE Latin1_General_100_BIN2_UTF8)";
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] The varchar/char column an <see cref="EqualityKey"/> over <paramref name="value"/>
+    /// is made from, or null. Its UTF-8 conversion is one-to-one, so equal keys mean byte-equal values: partitioning or
+    /// grouping by the key AND the column forms the same groups — and lets SQL Server push a filter on the column below
+    /// the window or aggregate (a pushed query under a hash join's keys, docs/duckdb-2.0-remote-execution.md §5.1). Not
+    /// for nvarchar: an unpaired surrogate becomes U+FFFD in the key, so equal keys do not mean equal values there.
+    /// </summary>
+    internal string? KeyColumn(string value)
+        => _boundedStrings.TryGetValue(value, out var bound) && !bound.Unicode ? bound.Raw : null;
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The string an <see cref="EqualityKey"/> was made from.</summary>
+    internal static string StringFromEqualityKey(string key)
+        => $"CONVERT(nvarchar(max), LEFT({key}, LEN({key}) - 1))";
+
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] The string a <see cref="StringKey"/> was made from.</summary>
+    internal static string StringFromKey(string key)
+        => $"CONVERT(nvarchar(max), REPLACE(REPLACE(LEFT({key}, LEN({key}) - 1), CHAR(1) + CHAR(1), CHAR(0)), CHAR(1) + CHAR(2), CHAR(1)))";
 
     private SqlExpr FieldReference(FieldRefExpr fr, IReadOnlyList<SqlColumn> scope)
     {
@@ -1109,11 +2053,190 @@ internal sealed class TSqlEmitter
         {
             return SqlExpr.Condition("(1 = 0)", SqlProps.None);
         }
+        if (OpenJsonList(expr, scope, indexable: false) is { } json)
+        {
+            // [FABRICATOR-PATCH: OURS-BY-DESIGN] as a value (a projection) the literal list: there SQL Server joined the
+            // JSON row by row (200 000 rows: 5.3 s, the literals 2.1 s)
+            var literals = LiteralList(expr, scope);
+            return new SqlExpr(literals.Value, json.Predicate, SType.Bool, json.Props | literals.Props);
+        }
+        return LiteralList(expr, scope);
+    }
+
+    private SqlExpr LiteralList(SingularOrListExpr expr, IReadOnlyList<SqlColumn> scope)
+    {
         var value = Render(expr.Value, scope);
         var options = expr.Options.Select(o => Render(o, scope)).ToList();
         var props = options.Aggregate(value.Props, (p, o) => p | o.Props);
         // T-SQL's IN is three-valued, like Substrait's.
+        Comparable(value.Type, value.Value); // [FABRICATOR-PATCH: OURS-BY-DESIGN] binary values decline
+        if (value.Type.IsStringLike) // [FABRICATOR-PATCH: OURS-BY-DESIGN] strings compare by their exact key
+        {
+            string exact = $"({EqualityKey(value.Value)} IN ({string.Join(", ", options.Select(o => EqualityKey(o.Value)))}))";
+            // [FABRICATOR-PATCH: OURS-BY-DESIGN] an indexable superset first (see IndexableString)
+            string? column = IndexableString(value.Value);
+            var literals = options.Select(o => IndexableString(o.Value)).ToList();
+            if (IsColumnReference(column) && literals.All(l => l != null && !IsColumnReference(l)))
+            {
+                exact = $"({column} IN ({string.Join(", ", literals)}) AND {exact})";
+            }
+            return SqlExpr.Condition(exact, props);
+        }
         return SqlExpr.Condition($"({value.Value} IN ({string.Join(", ", options.Select(o => o.Value))}))", props);
+    }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A long IN list of integer or string constants as one JSON array:
+    /// <c>x IN (SELECT [v] FROM OPENJSON(N'[…]') WITH ([v] int '$'))</c>. One statement of any length, where the
+    /// literals would make a statement SQL Server is slow to compile or refuses (a hash join's keys, which the host
+    /// hands a pushed query or a scan). Three-valued like the list: a NULL option is a JSON null and yields NULL, not
+    /// FALSE. Strings compare by their exact key; where the list is a WHERE conjunct of its own
+    /// (<paramref name="indexable"/>), after an indexable superset on the column, as the literal list does. Anywhere else
+    /// (under NOT or OR, in a projection) it is an EXISTS: two subqueries under NOT cannot become joins, and SQL Server
+    /// read the JSON once per row (NOT IN over 200 000 rows, 2.0 s).
+    /// Null when the list is short, not all constants, or of another type.
+    /// </summary>
+    private SqlExpr? OpenJsonList(SingularOrListExpr expr, IReadOnlyList<SqlColumn> scope, bool indexable)
+    {
+        if (!SupportsOpenJson || expr.Options.Count <= JsonListThreshold)
+        {
+            return null;
+        }
+        var literals = expr.Options.Select(ConstantOption).ToList();
+        if (literals.Any(l => l is null))
+        {
+            return null;
+        }
+        var value = Render(expr.Value, scope);
+        bool strings = value.Type.IsStringLike;
+        (string Type, long Min, long Max)? integer = value.Type.Kind switch
+        {
+            TypeKind.I8 or TypeKind.I16 => ("smallint", short.MinValue, short.MaxValue),
+            TypeKind.I32 => ("int", int.MinValue, int.MaxValue),
+            TypeKind.I64 => ("bigint", long.MinValue, long.MaxValue),
+            _ => null,
+        };
+        // without exact strings the literal list keeps comparing under the database's collations
+        if (integer is null && !(strings && ExactStrings))
+        {
+            return null;
+        }
+        var json = new StringBuilder("[");
+        int longest = 0;
+        bool ascii = true;
+        foreach (var literal in literals.Select(l => l!))
+        {
+            if (json.Length > 1)
+            {
+                json.Append(',');
+            }
+            if (literal.IsNull)
+            {
+                json.Append("null");
+            }
+            else if (strings && literal.StringValue is { } text)
+            {
+                AppendJsonString(json, text);
+                longest = Math.Max(longest, text.Length);
+                ascii &= text.All(ch => ch >= 0x20 && ch < 0x7F);
+            }
+            else if (integer is { } range && literal.Type.IsInteger && literal.IntValue >= range.Min && literal.IntValue <= range.Max)
+            {
+                json.Append(literal.IntValue.ToString(CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                return null; // another type, or a value the column's type cannot hold: the literal list renders it
+            }
+        }
+        json.Append(']');
+        string source = "OPENJSON(" + TSql.Unicode(json.ToString()) + ")";
+        var props = value.Props | SqlProps.Subquery;
+        bool hasNull = literals.Any(l => l!.IsNull);
+        // without a NULL option, say so: SQL Server otherwise plans for a NULL it would have to find
+        string NotNull(string alias) => hasNull ? "" : $" WHERE {alias}.[v] IS NOT NULL";
+        // Anywhere but a WHERE conjunct of its own the three-valued result matters (NOT, OR, a projection), and SQL
+        // Server's NOT IN reads the subquery once per row to look for a NULL — the JSON parsed 200 000 times, 1.8 s. The
+        // list's NULL is known here, so IN is written as a match OR an unknown: TRUE on a match, else UNKNOWN when the
+        // value is NULL or the list holds a NULL, else FALSE. Its NOT is an anti join SQL Server hashes.
+        string unknown = hasNull
+            ? " OR (1 = CAST(NULL AS int))"
+            : $" OR ({value.Value} IS NULL AND 1 = CAST(NULL AS int))";
+        if (integer is { } it)
+        {
+            string alias = NewAlias();
+            string from = $"{source} WITH ([v] {it.Type} '$') AS {alias}";
+            return SqlExpr.Condition(indexable
+                ? $"({value.Value} IN (SELECT {alias}.[v] FROM {from}{NotNull(alias)}))"
+                : $"(EXISTS (SELECT 1 FROM {from} WHERE {alias}.[v] = {value.Value}){unknown})", props);
+        }
+        Comparable(value.Type, value.Value);
+        string keys = NewAlias();
+        // the values' keys bounded where they fit: SQL Server cannot hash a varchar(max). 2666 characters are at most
+        // 8000 bytes of UTF-8 with the sentinel.
+        bool bounded = longest <= 2666;
+        string valueKey = bounded
+            ? $"CONVERT(varchar(8000), ({keys}.[v] COLLATE {BinaryCollation} + N'|') COLLATE {BinaryCollation})"
+            : EqualityKey(keys + ".[v] COLLATE " + BinaryCollation);
+        string keyFrom = $"{source} WITH ([v] nvarchar({(bounded ? "4000" : "max")}) '$') AS {keys}";
+        if (!indexable)
+        {
+            return SqlExpr.Condition(
+                $"(EXISTS (SELECT 1 FROM {keyFrom} WHERE {valueKey} = {EqualityKey(value.Value)}){unknown})", props);
+        }
+        string exact = $"({EqualityKey(value.Value)} IN (SELECT {valueKey} FROM {keyFrom}{NotNull(keys)}))";
+        // an indexable superset first, as for the literal list: the values in the column's own comparison, typed so the
+        // column needs no conversion (varchar for ASCII, as the literals are); DATABASE_DEFAULT settles the collation of
+        // the JSON column against the column's, and two binary-equal strings are equal under any collation
+        string? column = IndexableString(value.Value);
+        string? listType = ascii && longest <= 8000 ? "varchar(8000)" : longest <= 4000 ? "nvarchar(4000)" : null;
+        if (IsColumnReference(column) && listType != null)
+        {
+            string values = NewAlias();
+            exact = $"({column} IN (SELECT {values}.[v] COLLATE DATABASE_DEFAULT FROM {source} WITH ([v] {listType} '$') AS {values}{NotNull(values)}) AND {exact})";
+        }
+        return SqlExpr.Condition(exact, props);
+    }
+
+    /// <summary>A list option that is a constant: a literal, under casts that keep it an integer or a string (the producer
+    /// casts each option to the value's type). Null for anything else.</summary>
+    private static LiteralExpr? ConstantOption(Expr option)
+    {
+        while (option is CastExpr cast)
+        {
+            var family = cast.Type.IsInteger ? 1 : cast.Type.IsStringLike ? 2 : 0;
+            var inner = cast.Input is CastExpr c ? c.Type : cast.Input is LiteralExpr l ? l.Type : default;
+            if (family == 0 || (inner.IsInteger ? 1 : inner.IsStringLike ? 2 : 0) != family)
+            {
+                return null;
+            }
+            option = cast.Input;
+        }
+        return option as LiteralExpr;
+    }
+
+    private static void AppendJsonString(StringBuilder json, string text)
+    {
+        json.Append('"');
+        foreach (char ch in text)
+        {
+            switch (ch)
+            {
+                case '"': json.Append("\\\""); break;
+                case '\\': json.Append("\\\\"); break;
+                default:
+                    if (ch < 0x20)
+                    {
+                        json.Append("\\u").Append(((int)ch).ToString("x4", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        json.Append(ch);
+                    }
+                    break;
+            }
+        }
+        json.Append('"');
     }
 
     private SqlExpr MultiOrList(MultiOrListExpr expr, IReadOnlyList<SqlColumn> scope)
@@ -1132,7 +2255,7 @@ internal sealed class TSqlEmitter
             {
                 var o = Render(record[i], scope);
                 props |= o.Props;
-                terms.Add($"{values[i].Value} = {o.Value}");
+                terms.Add(values[i].Type.IsStringLike ? $"{EqualityKey(values[i].Value)} = {EqualityKey(o.Value)}" : $"{Comparable(values[i].Type, values[i].Value)} = {o.Value}"); // [FABRICATOR-PATCH: OURS-BY-DESIGN] exact string equality
             }
             records.Add("(" + string.Join(" AND ", terms) + ")");
         }
@@ -1241,6 +2364,23 @@ internal sealed class TSqlEmitter
                 break;
             case TypeKind.I8:
                 throw SubstraitTranslationException.Unsupported("Casts to i8 are not supported; SQL Server's tinyint is unsigned.");
+            case TypeKind.I16 or TypeKind.I32 or TypeKind.I64 when source.IsFloat:
+            {
+                // [FABRICATOR-PATCH: OURS-BY-DESIGN] DuckDB rounds a float half to EVEN (2.5 -> 2, 3.5 -> 4, -2.5 -> -2);
+                // T-SQL's CAST truncates and its ROUND goes half away from zero. Rebuilt exactly from FLOOR / CEILING:
+                // the fraction x - FLOOR(x) is exact in binary floating point, so no ROUND (which can carry
+                // 0.49999999999999994 up) is involved; a fraction of exactly .5 takes the even neighbour.
+                string x = input.Value;
+                string f = $"({x} - FLOOR({x}))";
+                string rounded = $"(CASE WHEN {f} < 0.5E0 THEN FLOOR({x}) WHEN {f} > 0.5E0 THEN CEILING({x}) " +
+                                 $"WHEN FLOOR({x}) = 2E0 * FLOOR({x} / 2E0) THEN FLOOR({x}) ELSE CEILING({x}) END)";
+                text = Convert(rounded, TSql.RequireTypeName(target));
+                break;
+            }
+            case TypeKind.I16 or TypeKind.I32 or TypeKind.I64 when source.Kind == TypeKind.Decimal && source.Scale > 0:
+                // [FABRICATOR-PATCH: OURS-BY-DESIGN] DuckDB rounds a decimal half away from zero, T-SQL's CAST truncates; ROUND first (measured)
+                text = Convert($"ROUND(CAST({input.Value} AS decimal(38,{source.Scale})), 0)", TSql.RequireTypeName(target));
+                break;
             default:
                 if (source.IsStringLike && target.Kind == TypeKind.Uuid)
                 {

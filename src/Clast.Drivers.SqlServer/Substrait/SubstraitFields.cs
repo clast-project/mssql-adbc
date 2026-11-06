@@ -85,6 +85,36 @@ internal static class SubstraitFields
     public const int Rel_AdvancedExtension = 10;
 
     // ── ReadRel ────────────────────────────────────────────────────
+    // ── WriteRel ([FABRICATOR-PATCH: OURS-BY-DESIGN]) ─────────────────
+    public const int WriteRel_NamedTable = 1;
+    public const int WriteRel_ExtensionTable = 2;
+    public const int WriteRel_TableSchema = 3;
+    public const int WriteRel_Op = 4;
+    public const int WriteRel_Input = 5;
+    public const int WriteRel_Output = 6;
+    public const int WriteRel_Common = 7;
+    public const int WriteRel_CreateMode = 8;
+    public const int WriteRel_AdvancedExtension = 9;
+    public const int WriteOp_Insert = 1;
+    public const int WriteOp_Delete = 2;
+    public const int WriteOp_Update = 3;
+    public const int WriteOp_Ctas = 4;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Not a spec value: what TranslatePushdown reports for a WriteRel
+    /// carrying the <c>fabricator.merge</c> enhancement.</summary>
+    public const int WriteOp_FabricatorMerge = -1;
+    public const string Enhancement_FabricatorMerge = "fabricator.merge";
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] On a ReadRel: the named table is a TABLE FUNCTION of the catalog,
+    /// and the enhancement's value is an Expression.Nested.Struct of its arguments.</summary>
+    public const string Enhancement_FabricatorTableFunction = "fabricator.table_function";
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] On a CrossRel: its right side is a table function called once per
+    /// row of the left side; the function's arguments are field references into the LEFT input.</summary>
+    public const string Enhancement_FabricatorApply = "fabricator.apply";
+    public const int Any_TypeUrl = 1;
+    public const int Any_Value = 2;
+    public const int WriteOutput_Unspecified = 0;
+    public const int WriteOutput_NoOutput = 1;
+    public const int WriteOutput_ModifiedRecords = 2;
+
     public const int ReadRel_Common = 1;
     public const int ReadRel_BaseSchema = 2;
     public const int ReadRel_Filter = 3;
@@ -119,6 +149,31 @@ internal static class SubstraitFields
     public const int ProjectRel_Expressions = 3;
 
     // ── SortRel ────────────────────────────────────────────────────
+    // [FABRICATOR-PATCH: OURS-BY-DESIGN] ConsistentPartitionWindowRel and its parts (algebra.proto)
+    public const int WindowRel_Common = 1;
+    public const int WindowRel_Input = 2;
+    public const int WindowRel_WindowFunctions = 3;
+    public const int WindowRel_PartitionExpressions = 4;
+    public const int WindowRel_Sorts = 5;
+    public const int WindowRelFunction_FunctionReference = 1;
+    public const int WindowRelFunction_UpperBound = 4;
+    public const int WindowRelFunction_LowerBound = 5;
+    public const int WindowRelFunction_Phase = 6;
+    public const int WindowRelFunction_OutputType = 7;
+    public const int WindowRelFunction_Arguments = 9;
+    public const int WindowRelFunction_Invocation = 10;
+    public const int WindowRelFunction_Options = 11;
+    public const int WindowRelFunction_BoundsType = 12;
+    public const int WindowBound_Preceding = 1;
+    public const int WindowBound_Following = 2;
+    public const int WindowBound_CurrentRow = 3;
+    public const int WindowBound_Unbounded = 4;
+    public const int WindowBoundOffset_Offset = 1;
+    public const int WindowBoundOffset_OffsetExpr = 2;
+    public const int BoundsType_Unspecified = 0;
+    public const int BoundsType_Rows = 1;
+    public const int BoundsType_Range = 2;
+
     public const int SortRel_Common = 1;
     public const int SortRel_Input = 2;
     public const int SortRel_Sorts = 3;

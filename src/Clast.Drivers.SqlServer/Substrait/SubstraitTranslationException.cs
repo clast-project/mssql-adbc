@@ -4,20 +4,19 @@
 // Derived from kusto_adbc (src/KustoAdbc/Substrait/SubstraitTranslationException.cs);
 // see THIRD-PARTY-NOTICES.md. Changes: namespace, messages.
 
-using Apache.Arrow.Adbc;
-
 namespace Clast.Drivers.SqlServer.Substrait;
 
 /// <summary>
 /// Thrown when a Substrait plan cannot be translated to T-SQL, with a message
 /// identifying the specific cause. Plans that are malformed or that use
 /// something the driver cannot translate with the same semantics both raise
-/// <see cref="AdbcStatusCode.InvalidArgument"/>.
+/// this exception.
 /// </summary>
-public sealed class SubstraitTranslationException : AdbcException
+// [FABRICATOR-PATCH: OURS-BY-DESIGN] no ADBC here: a plain exception, which the pushdown reads as "decline"
+public sealed class SubstraitTranslationException : Exception
 {
     public SubstraitTranslationException(string message)
-        : base(message, AdbcStatusCode.InvalidArgument)
+        : base(message)
     {
     }
 

@@ -19,6 +19,8 @@ internal enum SqlProps
     Aggregate = 4,
     /// <summary>Refers to a column of an enclosing query (a correlated subquery's outer reference).</summary>
     Outer = 8,
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] Contains a window function (not allowed in WHERE, GROUP BY or another window).</summary>
+    Window = 16,
 }
 
 /// <summary>
@@ -65,12 +67,13 @@ internal sealed class SqlExpr
 /// <summary>A column of a relation's output, as visible to Substrait field references.</summary>
 internal sealed class SqlColumn
 {
-    public SqlColumn(string name, SqlExpr expr, bool isBare, string? raw = null)
+    public SqlColumn(string name, SqlExpr expr, bool isBare, string? raw = null, string? unsupported = null)
     {
         Name = name;
         Expr = expr;
         IsBare = isBare;
         Raw = raw;
+        Unsupported = unsupported;
     }
 
     /// <summary>The name to give the column where a select list must name it.</summary>
@@ -94,9 +97,25 @@ internal sealed class SqlColumn
     /// </summary>
     public string? Raw { get; }
 
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] Why a query that uses this column cannot be written, or null.
+    /// </summary>
+    public string? Unsupported { get; }
+
+    /// <summary>
+    /// [FABRICATOR-PATCH: OURS-BY-DESIGN] A condition that holds exactly when this boolean column is TRUE — simpler
+    /// than <see cref="SqlExpr.Predicate"/>, but two-valued, so only for a WHERE conjunct that is the column itself
+    /// (FALSE and NULL are dropped alike there). A mark join's marker carries its EXISTS: the three-valued CASE
+    /// around it keeps SQL Server from planning a semi join.
+    /// </summary>
+    public string? TrueWhen { get; init; }
+
+    /// <summary>As <see cref="TrueWhen"/>, for the column being FALSE (a WHERE conjunct `NOT column`).</summary>
+    public string? FalseWhen { get; init; }
+
     public SqlColumn WithType(SType type) => new(Name, Expr.IsPredicate
         ? new SqlExpr(null, Expr.Predicate, type, Expr.Props)
-        : SqlExpr.Of(Expr.Value, type, Expr.Props), IsBare, Raw);
+        : SqlExpr.Of(Expr.Value, type, Expr.Props), IsBare, Raw, Unsupported) { TrueWhen = TrueWhen, FalseWhen = FalseWhen };
 }
 
 /// <summary>An ORDER BY item: an expression and a direction.</summary>
@@ -134,6 +153,8 @@ internal sealed class SelectBlock
     /// <summary>True when the columns are aggregates or grouping keys (a GROUP BY or a global aggregate).</summary>
     public bool Aggregated;
     public bool Distinct;
+    /// <summary>[FABRICATOR-PATCH: OURS-BY-DESIGN] True when some columns are window functions.</summary>
+    public bool Windowed;
     public List<OrderItem> OrderBy = new();
     public string? Top;
     public bool WithTies;
@@ -143,10 +164,10 @@ internal sealed class SelectBlock
     public bool HasFetch => Top != null || Offset != null || Fetch != null;
 
     /// <summary>True when a WHERE condition can be added (it applies before grouping and row limits).</summary>
-    public bool CanFilter => !Aggregated && !Distinct && !HasFetch;
+    public bool CanFilter => !Aggregated && !Distinct && !HasFetch && !Windowed;
 
     /// <summary>True when the block can be joined, or aggregated, as it stands.</summary>
-    public bool IsPlain => !Aggregated && !Distinct && !HasFetch;
+    public bool IsPlain => !Aggregated && !Distinct && !HasFetch && !Windowed;
 }
 
 /// <summary>T-SQL lexical helpers.</summary>
