@@ -101,9 +101,12 @@ Some differences are left even with a binary collation, and none can be declared
 
 * **Supplementary characters.** SQL Server's strings are UTF-16, and its binary collations
   work on code units. A character outside the Basic Multilingual Plane, such as an emoji,
-  counts as two in `char_length`, `strpos` and `substring`, `reverse` splits it, and it sorts
-  below U+E000 to U+FFFF instead of above them (all measured). The linguistic collations that
-  count it as one character don't order by code point. No collation gives both.
+  counts as two there, `reverse` splits it, and it sorts below U+E000 to U+FFFF instead of
+  above them (all measured). The linguistic collations that count it as one character don't
+  order by code point. No collation gives both, so the translator uses each for what it does
+  right: `char_length`, `strpos` and `substring` count and cut under
+  `Latin1_General_100_CS_AS_SC_UTF8`, and compare under the query's collation as before;
+  `reverse` and ordering still work on code units.
 * **Trailing spaces.** SQL Server pads the shorter string with spaces before comparing, under
   every collation, so `'a' = 'a '` is true and the two group together. (Measured; `LIKE` with a
   Unicode pattern is exact, and the translator uses one.)

@@ -134,6 +134,25 @@ public class SubstraitExecutionTests
         AssertRows(Run(plan), false, Row(5L, 6L, 1L, "ab", null, "ab é !", "x é ", "b é", "ba é "));
     }
 
+    [SkippableFact]
+    public void StringPositionsCountCharacters()
+    {
+        var f = new Functions();
+        int length = f.Add("functions_string", "char_length:str");
+        int strpos = f.Add("functions_string", "strpos:str_str");
+        int substring = f.Add("functions_string", "substring:str_i32_i32");
+        // U+1D11E is one character and two UTF-16 code units.
+        byte[] values = P.Values([("s", P.TString)], [P.Str("a\U0001D11Eb ")]);
+        byte[] plan = P.Plan(Select(values, 1,
+            P.Call(length, P.Field(0)),
+            P.Call(strpos, P.Field(0), P.Str("b")),
+            P.Call(strpos, P.Field(0), P.Str("\U0001D11E")),
+            P.Call(substring, P.Field(0), P.I32(2), P.I32(1)),
+            P.Call(substring, P.Field(0), P.I32(3), P.I32(2))),
+            ["length", "b", "clef", "second", "rest"], f);
+        AssertRows(Run(plan), false, Row(4L, 3L, 2L, "\U0001D11E", "b "));
+    }
+
     #endregion
 
     #region Aggregates and set operations
